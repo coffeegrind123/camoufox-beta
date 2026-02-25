@@ -365,6 +365,8 @@ def launch_options(
     i_know_what_im_doing: Optional[bool] = None,
     debug: Optional[bool] = None,
     virtual_display: Optional[str] = None,
+    persistent_context: Optional[bool] = None,
+    user_data_dir: Optional[Union[str, Path]] = None,
     **launch_options: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
@@ -572,7 +574,7 @@ def launch_options(
     ):
         LeakWarning.warn('proxy_without_geoip')
 
-    if 'Accept-Encoding' in fingerprint.headers and 'network.http.accept-encoding.secure' not in firefox_user_prefs:
+    if fingerprint.headers and 'Accept-Encoding' in fingerprint.headers and 'network.http.accept-encoding.secure' not in firefox_user_prefs:
         firefox_user_prefs['network.http.accept-encoding.secure'] = fingerprint.headers['Accept-Encoding']
 
     # Set locale
@@ -661,5 +663,6 @@ def launch_options(
         "firefox_user_prefs": firefox_user_prefs,
         "proxy": proxy,
         "headless": headless,
+        "_user_data_dir": str(user_data_dir) if user_data_dir else None,
         **(launch_options if launch_options is not None else {}),
     }

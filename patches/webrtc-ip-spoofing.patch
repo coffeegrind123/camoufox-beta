@@ -3,9 +3,9 @@ new file mode 100644
 index 0000000000..94575f2631
 --- /dev/null
 +++ b/dom/base/WebRTCIPManager.cpp
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,160 @@
 +#include "WebRTCIPManager.h"
-+#include "nsTHashMap.h"
++#include "MaskConfig.hpp"
 +#include "RoverfoxStorageManager.h"
 +#include "nsPrintfCString.h"
 +#include "nsGlobalWindowInner.h"
@@ -56,7 +56,7 @@ index 0000000000..94575f2631
 +WebRTCIPManager::SetIPv4(uint32_t userContextId, const nsAString& ipv4) {
 +  nsString key = IPv4KeyForUserContext(userContextId);
 +  RoverfoxStorageManager::PutString(key, ipv4);
-+  
++
 +  // Mark the function as disabled for this context after first use
 +  DisableIPv4Function(userContextId);
 +}
@@ -64,14 +64,21 @@ index 0000000000..94575f2631
 +/* static */ bool
 +WebRTCIPManager::GetIPv4(uint32_t userContextId, nsAString& outIPv4) {
 +  nsString key = IPv4KeyForUserContext(userContextId);
-+  return RoverfoxStorageManager::GetString(key, outIPv4);
++  if (RoverfoxStorageManager::GetString(key, outIPv4)) {
++    return true;
++  }
++  if (auto value = MaskConfig::GetString("webrtc:ipv4")) {
++    outIPv4 = NS_ConvertUTF8toUTF16(value.value().c_str());
++    return true;
++  }
++  return false;
 +}
 +
 +/* static */ void
 +WebRTCIPManager::SetIPv6(uint32_t userContextId, const nsAString& ipv6) {
 +  nsString key = IPv6KeyForUserContext(userContextId);
 +  RoverfoxStorageManager::PutString(key, ipv6);
-+  
++
 +  // Mark the function as disabled for this context after first use
 +  DisableIPv6Function(userContextId);
 +}
@@ -79,7 +86,14 @@ index 0000000000..94575f2631
 +/* static */ bool
 +WebRTCIPManager::GetIPv6(uint32_t userContextId, nsAString& outIPv6) {
 +  nsString key = IPv6KeyForUserContext(userContextId);
-+  return RoverfoxStorageManager::GetString(key, outIPv6);
++  if (RoverfoxStorageManager::GetString(key, outIPv6)) {
++    return true;
++  }
++  if (auto value = MaskConfig::GetString("webrtc:ipv6")) {
++    outIPv6 = NS_ConvertUTF8toUTF16(value.value().c_str());
++    return true;
++  }
++  return false;
 +}
 +
 +
@@ -273,10 +287,11 @@ index cd9090cda3..93cea20206 100644
      "WindowFeatures.h",
      "WindowProxyHolder.h",
  ]
-@@ -326,4 +327,8 @@ SOURCES += [
+@@ -326,5 +327,9 @@ SOURCES += [
      "nsWindowSizes.cpp",
  ]
 
++
 +# WebRTCIPManager compiled separately to avoid unified build errors
 +# (it includes RoverfoxStorageManager.h which causes template issues)
 +SOURCES += ["WebRTCIPManager.cpp"]
@@ -297,7 +312,7 @@ index 330a707789..4f87317dbb 100644
  #ifdef NS_PRINTING
  #  include "nsIPrintSettings.h"
  #endif
-@@ -7463,6 +7467,42 @@ IntlUtils* nsGlobalWindowInner::GetIntlUtils(ErrorResult& aError) {
+@@ -7463,6 +7467,48 @@ IntlUtils* nsGlobalWindowInner::GetIntlUtils(ErrorResult& aError) {
    return mIntlUtils;
  }
  
@@ -309,10 +324,13 @@ index 330a707789..4f87317dbb 100644
 +
 +  WebRTCIPManager::SetIPv4(userContextId, ipv4);
 +
-+  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64,
++  // then delete the property entirely.
 +  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
 +    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
 +    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setWebRTCIPv4", undef);
 +      JS_DeleteProperty(cx, global, "setWebRTCIPv4");
 +    }
 +  }
@@ -326,10 +344,13 @@ index 330a707789..4f87317dbb 100644
 +
 +  WebRTCIPManager::SetIPv6(userContextId, ipv6);
 +
-+  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64,
++  // then delete the property entirely.
 +  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
 +    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
 +    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setWebRTCIPv6", undef);
 +      JS_DeleteProperty(cx, global, "setWebRTCIPv6");
 +    }
 +  }
@@ -430,7 +451,7 @@ index ca237977cd..abfc081ae7 100644
                RefPtr<RTCStatsReport> report(new RTCStatsReport(window));
                report->Incorporate(*aReport);
                promise->MaybeResolve(std::move(report));
-@@ -3229,12 +3286,22 @@ const std::string& PeerConnectionImpl::GetName() {
+@@ -3229,12 +3286,15 @@ const std::string& PeerConnectionImpl::GetName() {
    return mName;
  }
  
@@ -441,15 +462,8 @@ index ca237977cd..abfc081ae7 100644
    STAMP_TIMECARD(mTimeCard, "Ice Candidate gathered");
    PC_AUTO_ENTER_API_CALL_VOID_RETURN(false);
  
-+  const std::string& candidate = [&]() -> const std::string& {
-+    if (ShouldSpoofCandidateIP()) {
-+      static std::string spoofedCandidate;
-+      spoofedCandidate = SpoofCandidateIP(candidate_);
-+      return spoofedCandidate;
-+    } else {
-+      return candidate_;
-+    }
-+  }();
++  const std::string candidate =
++      ShouldSpoofCandidateIP() ? SpoofCandidateIP(candidate_) : candidate_;
 +
    if (mForceIceTcp && std::string::npos != candidate.find(" UDP ")) {
      CSFLogWarn(LOGTAG, "Blocking local UDP candidate: %s", candidate.c_str());
@@ -499,9 +513,9 @@ index ca237977cd..abfc081ae7 100644
 +
 +bool isSpecialIP(const std::string& ip) {
 +  // Check if an IP should not be masked (special addresses)
-+  return (ip == "0.0.0.0" || ip == "127.0.0.1" || 
-+          ip == "::" || ip == "::1" || 
-+          ip.compare(0, 8, "169.254.") == 0 || 
++  return (ip == "0.0.0.0" || ip == "127.0.0.1" ||
++          ip == "::" || ip == "::1" ||
++          ip.compare(0, 8, "169.254.") == 0 ||
 +          ip.compare(0, 4, "fe80") == 0);
 +}
 +
@@ -512,17 +526,17 @@ index ca237977cd..abfc081ae7 100644
 +  
 +  if (isIPv6) {
 +    // check for private ipv6 (fc00::/7)
-+    return (ip.length() >= 4 && 
-+            ((ip[0] == 'f' || ip[0] == 'F') && 
-+             (ip[1] == 'c' || ip[1] == 'd' || 
++    return (ip.length() >= 4 &&
++            ((ip[0] == 'f' || ip[0] == 'F') &&
++             (ip[1] == 'c' || ip[1] == 'd' ||
 +              ip[1] == 'C' || ip[1] == 'D')));
 +  } else {
 +    // check ipv4 private ranges (RFC1918)
-+    return (ip.compare(0, 8, "192.168.") == 0 || 
-+            ip.compare(0, 3, "10.") == 0 || 
-+            (ip.compare(0, 4, "172.") == 0 && 
-+             ip.length() >= 7 && 
-+             ip[4] >= '1' && ip[4] <= '3' && 
++    return (ip.compare(0, 8, "192.168.") == 0 ||
++            ip.compare(0, 3, "10.") == 0 ||
++            (ip.compare(0, 4, "172.") == 0 &&
++             ip.length() >= 7 &&
++             ip[4] >= '1' && ip[4] <= '3' &&
 +             (ip[5] >= '0' && ip[5] <= '9')));
 +  }
 +}
@@ -732,7 +746,7 @@ diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
 index 7c509eb87e..0a9010c2d1 100644
 --- a/dom/webidl/Window.webidl
 +++ b/dom/webidl/Window.webidl
-@@ -892,6 +892,17 @@ partial interface Window {
+@@ -892,6 +892,14 @@ partial interface Window {
    readonly attribute VisualViewport visualViewport;
  };
 
@@ -740,9 +754,6 @@ index 7c509eb87e..0a9010c2d1 100644
 +partial interface Window {
 +  [Throws, Func="mozilla::dom::WebRTCIPManager::IsIPv4FunctionEnabledForWebIDL"]
 +  undefined setWebRTCIPv4(DOMString ipv4);
-+};
-+
-+partial interface Window {
 +  [Throws, Func="mozilla::dom::WebRTCIPManager::IsIPv6FunctionEnabledForWebIDL"]
 +  undefined setWebRTCIPv6(DOMString ipv6);
 +};
