@@ -2,6 +2,7 @@
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import sys
@@ -13,7 +14,7 @@ from _mixin import find_src_dir, get_moz_target, list_files, run, temp_cd
 UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender', 'vaapitest', 'glxtest'}
 
 
-def add_includes_to_package(package_file, includes, fonts, new_file, target):
+def add_includes_to_package(package_file, includes, fonts, new_file, target, version, release):
     with tempfile.TemporaryDirectory() as temp_dir:
         # Extract package
         run(join(['7z', 'x', package_file, f'-o{temp_dir}']), exit_on_fail=False)
@@ -28,6 +29,8 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target):
                 fonts=fonts,
                 new_file=new_file,
                 target=target,
+                version=version,
+                release=release,
             )
 
         if target == 'macos':
@@ -66,6 +69,11 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target):
                     )
                 else:
                     shutil.copy2(include, target_dir)
+
+        # Generate version.json for the pip package to detect the installed version
+        version_json = os.path.join(target_dir, 'version.json')
+        with open(version_json, 'w') as f:
+            json.dump({"version": version, "release": release}, f)
 
         # Add the font folders under fonts/
         fonts_dir = os.path.join(target_dir, 'fonts')
@@ -161,6 +169,8 @@ def main():
         fonts=args.fonts,
         new_file=new_name,
         target=args.os,
+        version=args.version,
+        release=args.release,
     )
 
     print(f"Packaging complete for {args.os}")
