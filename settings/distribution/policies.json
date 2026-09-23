@@ -21,7 +21,6 @@
     "DontCheckDefaultBrowser": true,
     "DisableFirefoxAccounts": true,
     "DisableFormHistory": true,
-    "HardwareAcceleration": false,
     "WindowsSSO": false,
     "PasswordManagerEnabled": false,
     "OfferToSaveLogins": false,
