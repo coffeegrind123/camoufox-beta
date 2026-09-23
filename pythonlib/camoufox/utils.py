@@ -1,32 +1,44 @@
 import os
 import sys
+from functools import wraps
 from os import environ
 from os.path import abspath
 from pathlib import Path
 from pprint import pprint
-from random import randint, randrange
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
+from random import randint
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import orjson
 from browserforge.fingerprints import Fingerprint, Screen
-from screeninfo import get_monitors
 from typing_extensions import TypeAlias
 from ua_parser import user_agent_parser
 
 from .addons import DefaultAddons, add_default_addons, confirm_paths
+from .display import has_display, largest_display
 from .exceptions import (
     InvalidOS,
     InvalidPropertyType,
     NonFirefoxFingerprint,
-    UnknownProperty,
 )
-from .fingerprints import from_browserforge, generate_fingerprint
+from .fingerprints import from_browserforge, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset, fix_navigator_arch, fix_screen_no_taskbar, clamp_screen_to_display, clamp_window_dimensions, clamp_window_position, raise_screen_to_modern_floor, sample_webgl_for_screen, set_media_devices_defaults
+from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
-from .locale import geoip_allowed, get_geolocation, handle_locales
-from .pkgman import OS_NAME, get_path, installed_verstr, launch_path
+from .locales import handle_locales
+import warnings
+
+from .pkgman import (
+    INSTALL_DIR,
+    OS_NAME,
+    Version,
+    effective_version_min,
+    ensure_browser_profile_dir,
+    get_path,
+    installed_verstr,
+    launch_path,
+)
 from .virtdisplay import VirtualDisplay
-from .warnings import LeakWarning
+from ._warnings import LeakWarning
 from .webgl import sample_webgl
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
@@ -41,11 +53,107 @@ CACHE_PREFS = {
 }
 
 
+def _generate_fontconfig(fontconfig_path: str, path: Optional[Path] = None) -> str:
+    """
+    Generates a runtime fontconfig that resolves bundled font paths absolutely.
+    The bundled fonts.conf uses prefix="cwd" relative paths which break when
+    Playwright's working directory differs from the browser install directory.
+    Writes a patched copy to the platform cache dir (deterministic, only
+    regenerated when content changes). This must not live inside the versioned
+    browser bundle: the bundle is commonly baked into an image as root and run
+    as a non-root user, so it is read-only at launch time.
+    """
+    import hashlib
+
+    # Beside the caller's own binary when they supplied one; see get_env_vars.
+    fonts_dir = str(path.parent / "fonts") if path else get_path("fonts")
+    fonts_conf_src = os.path.join(fontconfig_path, "fonts.conf")
+
+    with open(fonts_conf_src, 'r') as f:
+        conf_content = f.read()
+
+    conf_content = conf_content.replace(
+        '<dir prefix="cwd">fonts</dir>',
+        f'<dir>{fonts_dir}</dir>',
+    )
+
+    # INSTALL_DIR is platformdirs' user_cache_dir("camoufox"); see pkgman.
+    cache_dir = str(INSTALL_DIR / 'fontconfig')
+    os.makedirs(cache_dir, exist_ok=True)
+
+    content_hash = hashlib.sha256(conf_content.encode()).hexdigest()[:12]
+    runtime_conf = os.path.join(cache_dir, f'fonts-{content_hash}.conf')
+    if not os.path.exists(runtime_conf):
+        with open(runtime_conf, 'w') as f:
+            f.write(conf_content)
+
+    return runtime_conf
+
+
+def warn_if_executable_predates_playwright(path: Optional[Path]) -> None:
+    """Warn when a caller's own binary is older than their Playwright needs.
+
+    A managed install below the floor is simply upgraded (pkgman resolves it),
+    but `executable_path` deliberately bypasses that -- the caller supplied the
+    binary, so we neither replace it nor download another. That leaves the one
+    pairing nothing checks: an old build driven by Playwright >= 1.61, which
+    sends viewport fields the older Juggler schema rejects.
+
+    This warns rather than raises, because the pairing is not always fatal.
+    Camoufox defaults to no_viewport when it spoofs window dimensions
+    (sync_api), and Playwright then never sends Browser.setDefaultViewport --
+    so the default path works on an old build. It breaks only when a viewport
+    is set explicitly, and then the error is a bare "Protocol error
+    (Browser.setDefaultViewport)" with nothing pointing at the real cause.
+    Refusing to launch would break setups that currently work.
+
+    A build with no version.json beside it -- an unpackaged objdir build, say --
+    tells us nothing, so it is left alone.
+    """
+    if path is None:
+        return
+    try:
+        installed = Version.from_path(Path(path).parent)
+    except (FileNotFoundError, KeyError, ValueError):
+        return
+
+    required = effective_version_min()
+    if installed >= required:
+        return
+
+    warnings.warn(
+        f"The Camoufox build at {path} is {installed.build}, but Playwright "
+        f"{_resolved_playwright_version_str()} needs at least {required.build}. "
+        "Contexts created with an explicit viewport will fail with "
+        '"Protocol error (Browser.setDefaultViewport)". Update the build, or pin '
+        "playwright<1.61.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _resolved_playwright_version_str() -> str:
+    from importlib.metadata import version
+
+    try:
+        return version('playwright')
+    except Exception:
+        return 'the installed version'
+
+
 def get_env_vars(
-    config_map: Dict[str, str], user_agent_os: str
+    config_map: Dict[str, str],
+    user_agent_os: str,
+    path: Optional[Path] = None,
 ) -> Dict[str, Union[str, float, bool]]:
     """
     Gets a dictionary of environment variables for Camoufox.
+
+    `path` is the caller's own executable, when they supplied one. The bundled
+    fontconfig is read from beside that binary rather than from the managed
+    install, the same way _load_properties() already treats properties.json:
+    a caller running their own build should not be resolved against, or made
+    to download, a different one.
     """
     env_vars: Dict[str, Union[str, float, bool]] = {}
     try:
@@ -68,8 +176,34 @@ def get_env_vars(
             sys.exit(1)
 
     if OS_NAME == 'lin':
-        fontconfig_path = get_path(os.path.join("fontconfig", user_agent_os))
-        env_vars['FONTCONFIG_PATH'] = fontconfig_path
+        # https://github.com/coryking/camoufox/commit/f21eeb2850a74cc104fb57e17e0a2fa27b7a2a28
+        # Thanks @coryking
+        # the user_agent_os is either 'lin', 'mac', or 'win' but our fontconfig directory is 'linux', 'macos', or 'windows'
+        directory_map = {
+            'lin': 'linux',
+            'mac': 'macos',
+            'win': 'windows',
+        }
+        os_dir = directory_map.get(user_agent_os, user_agent_os)
+
+        # v150+ uses "fontconfig/" (matching the Go launcher); older bundles shipped "fontconfigs/".
+        def _bundle_path(*parts: str) -> str:
+            if path:
+                return str(path.parent.joinpath(*parts))
+            return get_path(os.path.join(*parts))
+
+        fontconfig_path = _bundle_path("fontconfig", os_dir)
+        if not os.path.exists(os.path.join(fontconfig_path, "fonts.conf")):
+            fontconfig_path = _bundle_path("fontconfigs", os_dir)
+
+        # assert that fonts.conf exists in the directory
+        if not os.path.exists(os.path.join(fontconfig_path, "fonts.conf")):
+            # puke violently if fonts.conf doesn't exist!!
+            raise FileNotFoundError(
+                f"fonts.conf not found in {fontconfig_path}!  Something ain't right with your camoufox bundle."
+            )
+
+        env_vars['FONTCONFIG_FILE'] = _generate_fontconfig(fontconfig_path, path=path)
 
     return env_vars
 
@@ -97,12 +231,16 @@ def validate_config(config_map: Dict[str, str], path: Optional[Path] = None) -> 
     for key, value in config_map.items():
         expected_type = property_types.get(key)
         if not expected_type:
-            raise UnknownProperty(f"Unknown property {key} in config")
+            print(f'Skipping unknown patch {key} : {value}')
+            continue  # Property not supported by this browser version; skip silently
 
         if not validate_type(value, expected_type):
             raise InvalidPropertyType(
                 f"Invalid type for property {key}. Expected {expected_type}, got {type(value).__name__}"
             )
+
+        if key == 'voices':
+            validate_voices(value)
 
 
 def validate_type(value: Any, expected_type: str) -> bool:
@@ -127,6 +265,38 @@ def validate_type(value: Any, expected_type: str) -> bool:
         return isinstance(value, dict)
     else:
         return False
+
+
+# The five fields MaskConfig::MVoices() requires of every `voices` entry. It
+# skips anything missing one of them, so a bare "Name:lang:type" string or a
+# half-filled object registers nothing -- and a voice list that registers
+# nothing leaves the host's native voices exposed. Reject the bad shape here,
+# before launch, instead of letting it degrade silently in the browser (#731).
+VOICE_FIELDS: Tuple[str, ...] = ('lang', 'name', 'voiceUri', 'isDefault', 'isLocalService')
+
+
+def validate_voices(voices: Any) -> None:
+    """
+    Validates that every `voices` entry is a complete voice object.
+    """
+    if not isinstance(voices, list):
+        raise InvalidPropertyType(
+            f"Invalid type for property voices. Expected array, got {type(voices).__name__}"
+        )
+
+    for index, voice in enumerate(voices):
+        if not isinstance(voice, dict):
+            raise InvalidPropertyType(
+                f"Invalid voices[{index}]: expected an object with "
+                f"{{{', '.join(VOICE_FIELDS)}}}, got {type(voice).__name__} "
+                f"({voice!r}). Camoufox needs full voice objects, not names."
+            )
+        missing = [field for field in VOICE_FIELDS if field not in voice]
+        if missing:
+            raise InvalidPropertyType(
+                f"Invalid voices[{index}]: missing {', '.join(missing)}. "
+                f"Every voice needs {{{', '.join(VOICE_FIELDS)}}}."
+            )
 
 
 def get_target_os(config: Dict[str, Any]) -> Literal['mac', 'win', 'lin']:
@@ -156,19 +326,16 @@ def determine_ua_os(user_agent: str) -> Literal['mac', 'win', 'lin']:
 def get_screen_cons(headless: Optional[bool] = None) -> Optional[Screen]:
     """
     Determines a sane viewport size for Camoufox if being ran in headful mode.
-    """
-    if headless is False:
-        return None  # Skip if headless
-    try:
-        monitors = get_monitors()
-    except Exception:
-        return None  # Skip if there's an error getting the monitors
-    if not monitors:
-        return None  # Skip if there are no monitors
 
-    # Use the dimensions from the monitor with greatest screen real estate
-    monitor = max(monitors, key=lambda m: m.width * m.height)
-    return Screen(max_width=monitor.width, max_height=monitor.height)
+    Bounds are CSS pixels, the unit Firefox lays its windows out in -- see
+    camoufox.display for why that differs from the monitor's physical size.
+    """
+    if headless is True:
+        return None  # Skip if headless
+    display = largest_display()
+    if display is None:
+        return None  # Skip if the display can't be probed
+    return Screen(max_width=display.width, max_height=display.height)
 
 
 def update_fonts(config: Dict[str, Any], target_os: str) -> None:
@@ -285,9 +452,72 @@ def warn_manual_config(config: Dict[str, Any]) -> None:
     # Manual navigator setting
     if is_domain_set(config, 'navigator.'):
         LeakWarning.warn('navigator', False)
+    # Touchscreen digitizer spoofing. Called out separately from the blanket
+    # navigator warning because the knock-on effects reach past navigator into
+    # CSS pointer media queries and the TouchEvent interfaces.
+    if is_domain_set(config, 'navigator.maxTouchPoints'):
+        LeakWarning.warn('max_touch_points', False)
     # Manual screen/window setting
     if is_domain_set(config, 'screen.', 'window.', 'document.body.'):
         LeakWarning.warn('viewport', False)
+
+
+_WINDOW_DIM_KEYS = (
+    'window.outerWidth',
+    'window.outerHeight',
+    'window.innerWidth',
+    'window.innerHeight',
+    'document.body.clientWidth',
+    'document.body.clientHeight',
+)
+
+
+def spoofs_window_dimensions(from_options: Dict[str, Any]) -> bool:
+    """
+    Whether the CAMOU_CONFIG in a set of launch options spoofs any window
+    dimension. The config is chunked across CAMOU_CONFIG_<n> env vars, so
+    reassemble it in index order before looking.
+    """
+    env = from_options.get('env') or {}
+    chunks = [(int(k.rsplit('_', 1)[1]), v) for k, v in env.items() if k.startswith('CAMOU_CONFIG_')]
+    if not chunks:
+        return False
+    blob = ''.join(v for _, v in sorted(chunks))
+    return any(key in blob for key in _WINDOW_DIM_KEYS)
+
+
+def attach_no_viewport_default(target: Any) -> Any:
+    """
+    Default new_page()/new_context() to no_viewport=True.
+
+    Playwright applies a 1280x720 viewport by default, which makes Juggler ask
+    the content window to become 1280x720 (TargetRegistry.updateViewportSize).
+    When Camoufox is pinning the window to a spoofed size, that request can
+    never be satisfied, and awaitViewportDimensions has no timeout -- so the
+    second new_page() hangs forever (daijro/camoufox#666).
+
+    With no_viewport, Juggler measures the window instead of resizing it, so the
+    handshake resolves immediately and the page reports the spoofed dimensions
+    exactly. Explicit viewport=/no_viewport= from the caller always wins.
+    """
+    for name in ('new_page', 'new_context'):
+        original = getattr(target, name, None)
+        if original is None:
+            continue
+
+        def wrap(original: Any) -> Any:
+            @wraps(original)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                if 'viewport' not in kwargs and 'no_viewport' not in kwargs:
+                    kwargs['no_viewport'] = True
+                # Works for both sync and async: async returns the coroutine
+                # unawaited, and the caller awaits it as usual.
+                return original(*args, **kwargs)
+
+            return wrapper
+
+        setattr(target, name, wrap(original))
+    return target
 
 
 async def async_attach_vd(
@@ -302,9 +532,13 @@ async def async_attach_vd(
     _close = browser.close
 
     async def new_close(*args: Any, **kwargs: Any):
-        await _close(*args, **kwargs)
-        if virtual_display:
-            virtual_display.kill()
+        try:
+            await _close(*args, **kwargs)
+        except Exception:
+            raise
+        finally:
+            if virtual_display:
+                virtual_display.kill()
 
     browser.close = new_close
     browser._virtual_display = virtual_display
@@ -324,14 +558,44 @@ def sync_attach_vd(
     _close = browser.close
 
     def new_close(*args: Any, **kwargs: Any):
-        _close(*args, **kwargs)
-        if virtual_display:
-            virtual_display.kill()
+        try:
+            _close(*args, **kwargs)
+        except Exception:
+            raise
+        finally:
+            if virtual_display:
+                virtual_display.kill()
 
     browser.close = new_close
     browser._virtual_display = virtual_display
 
     return browser
+
+
+def resolve_verstr(executable_path: Optional[Path] = None) -> str:
+    """The version of the build about to be launched.
+
+    installed_verstr() answers "which release did `camoufox fetch` put in the
+    cache", which is the wrong question when the caller named a binary: it
+    raises CamoufoxNotInstalled on a machine that has a perfectly good build and
+    simply never downloaded one. That is what every tests/patches guard hit in
+    CI -- 14 of 16 died before launching anything.
+
+    Firefox writes application.ini beside the executable, so when a path is
+    given the answer is right there. Falls back to the installed release when it
+    is not, which is the ordinary `pip install camoufox` case.
+    """
+    if executable_path:
+        ini = Path(executable_path).parent / 'application.ini'
+        try:
+            for line in ini.read_text(encoding='utf-8', errors='replace').splitlines():
+                if line.startswith('Version='):
+                    version = line.split('=', 1)[1].strip()
+                    if version:
+                        return version
+        except OSError:
+            pass
+    return installed_verstr()
 
 
 def launch_options(
@@ -344,6 +608,7 @@ def launch_options(
     disable_coop: Optional[bool] = None,
     webgl_config: Optional[Tuple[str, str]] = None,
     geoip: Optional[Union[str, bool]] = None,
+    geoip_db: Optional[str] = None,
     humanize: Optional[Union[bool, float]] = None,
     locale: Optional[Union[str, List[str]]] = None,
     addons: Optional[List[str]] = None,
@@ -353,10 +618,13 @@ def launch_options(
     screen: Optional[Screen] = None,
     window: Optional[Tuple[int, int]] = None,
     fingerprint: Optional[Fingerprint] = None,
+    fingerprint_preset: Optional[Union[bool, Dict[str, Any]]] = None,
     ff_version: Optional[int] = None,
     headless: Optional[bool] = None,
     main_world_eval: Optional[bool] = None,
+    allow_addon_new_tab: Optional[bool] = None,
     executable_path: Optional[Union[str, Path]] = None,
+    browser: Optional[str] = None,
     firefox_user_prefs: Optional[Dict[str, Any]] = None,
     proxy: Optional[Dict[str, str]] = None,
     enable_cache: Optional[bool] = None,
@@ -390,6 +658,9 @@ def launch_options(
         geoip (Optional[Union[str, bool]]):
             Calculate longitude, latitude, timezone, country, & locale based on the IP address.
             Pass the target IP address to use, or `True` to find the IP address automatically.
+        geoip_db (Optional[str]):
+            Name of the GeoIP database to use (e.g., "MaxMind").
+            If not specified, uses the configured default.
         humanize (Optional[Union[bool, float]]):
             Humanize the cursor movement.
             Takes either `True`, or the MAX duration in seconds of the cursor movement.
@@ -414,6 +685,10 @@ def launch_options(
             Use a custom BrowserForge fingerprint. Note: Not all values will be implemented.
             If not provided, a random fingerprint will be generated based on the provided
             `os` & `screen` constraints.
+        fingerprint_preset (Optional[Union[bool, Dict[str, Any]]]):
+            Opt into using real fingerprint presets instead of BrowserForge.
+            Pass `True` to use a random bundled preset, or pass a preset dict directly.
+            By default (None), BrowserForge is used for infinite unique fingerprints.
         ff_version (Optional[int]):
             Firefox version to use. Defaults to the current Camoufox version.
             To prevent leaks, only use this for special cases.
@@ -424,8 +699,16 @@ def launch_options(
         main_world_eval (Optional[bool]):
             Whether to enable running scripts in the main world.
             To use this, prepend "mw:" to the script: page.evaluate("mw:" + script).
+        allow_addon_new_tab (Optional[bool]):
+            Whether to allow addon open new tabs. Defaults to False.
         executable_path (Optional[Union[str, Path]]):
             Custom Camoufox browser executable path.
+        browser (Optional[str]):
+            Select a specific installed browser version. Can be:
+            - Repo/build like "official/beta.20"
+            - Build alone like "beta.20"
+            - Full version like "134.0.2-beta.20"
+            If not specified, uses the active version.
         firefox_user_prefs (Optional[Dict[str, Any]]):
             Firefox user preferences to set.
         proxy (Optional[Dict[str, str]]):
@@ -446,6 +729,8 @@ def launch_options(
         **launch_options (Dict[str, Any]):
             Additional Firefox launch options.
     """
+    ensure_browser_profile_dir(env)
+
     # Build the config
     if config is None:
         config = {}
@@ -463,8 +748,19 @@ def launch_options(
         custom_fonts_only = False
     if i_know_what_im_doing is None:
         i_know_what_im_doing = False
-    if env is None:
-        env = cast(Dict[str, Union[str, float, bool]], environ)
+    # Keep per-launch overrides isolated from the process environment and from
+    # mappings supplied by callers. In particular, DISPLAY must not outlive the
+    # virtual display that owns it.
+    env = dict(environ) if env is None else dict(env)
+    if executable_path is None:
+        # Point every launch at a specific build without threading the path
+        # through each call site. The CI runners set it, and honouring it in the
+        # library is what lets tests/patches/*.py run against a local build,
+        # since those construct AsyncCamoufox directly.
+        # Absent the variable nothing changes.
+        _env_executable = environ.get('CAMOUFOX_EXECUTABLE_PATH', '').strip()
+        if _env_executable:
+            executable_path = _env_executable
     if isinstance(executable_path, str):
         # Convert executable path to a Path object
         executable_path = Path(abspath(executable_path))
@@ -472,10 +768,22 @@ def launch_options(
     # Handle virtual display
     if virtual_display:
         env['DISPLAY'] = virtual_display
+        # Virtual display uses Xvfb (X11). If the host session forces Wayland via env vars,
+        # GTK/Firefox may try Wayland and ignore DISPLAY, breaking Xvfb usage.
+        env['GDK_BACKEND'] = 'x11'
+        env.pop('WAYLAND_DISPLAY', None)
+        env["MOZ_ENABLE_WAYLAND"] = "0"
 
     # Warn the user for manual config settings
     if not i_know_what_im_doing:
         warn_manual_config(config)
+
+    # Snapshot which domains the USER set before fingerprint generation fills in
+    # the rest. The post-generation BrowserForge-correction fixes below must
+    # only touch generated values, never override what the user passed.
+    _user_set_navigator = is_domain_set(config, 'navigator.')
+    _user_set_screen_window = is_domain_set(config, 'screen.', 'window.')
+    _user_set_media_devices = is_domain_set(config, 'mediaDevices:')
 
     # Assert the target OS is valid
     if os:
@@ -498,30 +806,85 @@ def launch_options(
         ff_version_str = str(ff_version)
         LeakWarning.warn('ff_version', i_know_what_im_doing)
     else:
-        ff_version_str = installed_verstr().split('.', 1)[0]
+        ff_version_str = resolve_verstr(executable_path).split('.', 1)[0]
 
     # Generate a fingerprint
-    if fingerprint is None:
+    _used_preset = False
+    if fingerprint is not None:
+        # User passed a custom BrowserForge fingerprint
+        if not i_know_what_im_doing:
+            check_custom_fingerprint(fingerprint)
+    elif fingerprint_preset is not None:
+        # User opted into real fingerprint presets
+        if isinstance(fingerprint_preset, dict):
+            preset = fingerprint_preset
+        else:
+            preset = get_random_preset(os=os, ff_version=ff_version_str)
+        if preset:
+            merge_into(config, from_preset(preset, ff_version_str))
+            _used_preset = True
+
+    # Bound the geometry to the real display. BrowserForge only honours this when
+    # its pool has a match, so it is re-applied after generation as well.
+    # `headless` and "is there a display to probe" are separate questions: passing
+    # `headless or has_display(env)` made a headful run on a real display look like a
+    # headless one to get_screen_cons(), which then skipped the bound entirely.
+    screen_cons = screen or (get_screen_cons(headless) if has_display(env) else None)
+
+    if not _used_preset and fingerprint is None:
+        # Default: BrowserForge synthetic generation (infinite unique fingerprints)
         fingerprint = generate_fingerprint(
-            screen=screen or get_screen_cons(headless or 'DISPLAY' in env),
+            screen=screen_cons,
             window=window,
             os=os,
         )
-    else:
-        # Or use the one passed by the user
-        if not i_know_what_im_doing:
-            check_custom_fingerprint(fingerprint)
 
-    # Inject the fingerprint into the config
-    merge_into(
-        config,
-        from_browserforge(fingerprint, ff_version_str),
-    )
+    if not _used_preset and fingerprint is not None:
+        # Inject the BrowserForge fingerprint into the config
+        merge_into(
+            config,
+            from_browserforge(fingerprint, ff_version_str),
+        )
 
     target_os = get_target_os(config)
 
-    # Set a random window.history.length
-    set_into(config, 'window.history.length', randrange(1, 6))  # nosec
+    # Correct BrowserForge fingerprint inconsistencies that leak as headless /
+    # impossible-geometry tells, unless the user is driving these themselves.
+    if not _user_set_navigator:
+        fix_navigator_arch(config, target_os)
+    if not _user_set_screen_window:
+        # Lift netbook-era geometry to something current hardware reports,
+        # before the display clamp below so a genuinely small real monitor
+        # still wins (#729). Synthetic draws only: a preset is a real device,
+        # internally consistent by construction, and two of the bundled v150
+        # presets genuinely report sub-netbook screens (736x414, 960x540).
+        # Rewriting those to 1366x768 would break the very coherence #729 is
+        # about, and _user_set_screen_window is read before the preset merges
+        # in, so it does not cover this.
+        if not _used_preset:
+            raise_screen_to_modern_floor(config)
+        # Headful on a real monitor only: this bound exists so the window fits
+        # the screen it is drawn on. headless has no window to overflow, and
+        # headless='virtual' reaches here as headless=False (see async_api) with
+        # a 1x1 Xvfb (virtdisplay.py) that is not a real screen.
+        if headless is False and not virtual_display and screen_cons:
+            clamp_screen_to_display(config, screen_cons.max_width, screen_cons.max_height)
+        fix_screen_no_taskbar(config, target_os)
+        clamp_window_dimensions(config)
+        clamp_window_position(config)
+
+    # Deliberately NOT setting window.history.length. It used to be pinned to a
+    # random 1-5 because browser.sessionhistory.max_entries=0 left the real
+    # session history empty, so the honest value was 0 -- an impossible number,
+    # since the HTML spec guarantees a browsing context always keeps its current
+    # entry. settings/camoufox.cfg now runs Firefox's stock max_entries, so the
+    # real value starts at 1 and grows with each navigation.
+    #
+    # Pinning it on top of that is strictly worse than leaving it alone: the
+    # value would no longer move across navigations, and a fresh tab would claim
+    # a depth of, say, 4 while history.back() -- which reads the real session
+    # history -- does nothing. Any page can check that pair. The property stays
+    # in properties.json for callers who want to override it by hand.
 
     # Update fonts list
     if fonts:
@@ -530,16 +893,53 @@ def launch_options(
     if custom_fonts_only:
         firefox_user_prefs['gfx.bundled-fonts.activate'] = 0
         if fonts:
-            # The user has passed their own fonts, and OS fonts are disabled.
             LeakWarning.warn('custom_fonts_only')
         else:
-            # OS fonts are disabled, and the user has not passed their own fonts either.
             raise ValueError('No custom fonts were passed, but `custom_fonts_only` is enabled.')
-    else:
-        update_fonts(config, target_os)
+    elif 'fonts' not in config or not config.get('fonts'):
+        # Generate a unique random font subset from the OS font list
+        os_name = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}.get(target_os, 'macos')
+        try:
+            config['fonts'] = _generate_random_font_subset(os_name)
+        except Exception:
+            update_fonts(config, target_os)
 
-    # Set a fixed font spacing seed
-    set_into(config, 'fonts:spacing_seed', randint(0, 1_073_741_823))  # nosec
+    # Spoof the speech-synthesis voice list.
+    #
+    # This has to fail CLOSED. Firefox registers the host's speech-dispatcher /
+    # SAPI / NSSpeech voices unless something stops it, and nsSynthVoiceRegistry
+    # only stops it when Camoufox owns the list. Leaving `voices` unset -- which
+    # the old `except Exception: pass` did on any generation failure -- exposed
+    # every native voice on the box (14805 espeak-ng entries on a stock Linux
+    # install) under a fingerprint claiming macOS or Windows: it both leaks the
+    # real host OS and contradicts the rest of the profile (#731).
+    if 'voices' not in config:
+        os_name_v = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}.get(target_os, 'macos')
+        try:
+            config['voices'] = _generate_random_voice_subset(
+                os_name_v, config.get('navigator.language')
+            )
+        except Exception:
+            # An empty list still blocks the host's voices (see below), so a
+            # generation failure degrades to "no voices" rather than "all of
+            # the host's".
+            config['voices'] = []
+
+    # Pin the block explicitly instead of relying on a non-empty list to imply
+    # it, so an empty list -- or one whose entries the browser rejects as
+    # malformed -- cannot fall through to the host's native voices. set_into
+    # leaves an explicit caller value alone.
+    set_into(config, 'voices:blockIfNotDefined', True)
+
+    # Default mediaDevices to one mic + one camera so headless contexts don't
+    # expose an empty enumerateDevices() list (a headless tell).
+    if not _user_set_media_devices:
+        set_media_devices_defaults(config)
+
+    # Set random seeds for fingerprint noise (per launch)
+    set_into(config, 'fonts:spacing_seed', randint(1, 4_294_967_295))  # nosec
+    set_into(config, 'audio:seed', randint(1, 4_294_967_295))  # nosec
+    set_into(config, 'canvas:seed', randint(1, 4_294_967_295))  # nosec
 
     # Set geolocation
     if geoip:
@@ -560,8 +960,13 @@ def launch_options(
             elif valid_ipv6(geoip):
                 set_into(config, 'webrtc:ipv6', geoip)
 
-        geolocation = get_geolocation(geoip)
-        config.update(geolocation.as_config())
+        geolocation = get_geolocation(geoip, geoip_db=geoip_db)
+        geo_config = geolocation.as_config()
+        for key, value in geo_config.items():
+            if key in ('timezone', 'locale:language', 'locale:region', 'locale:script'):
+                config.setdefault(key, value)
+            else:
+                config[key] = value
 
     # Raise a warning when a proxy is being used without spoofing geolocation.
     # This is a very bad idea; the warning cannot be ignored with i_know_what_im_doing.
@@ -579,12 +984,18 @@ def launch_options(
     # Pass the humanize option
     if humanize:
         set_into(config, 'humanize', True)
-        if isinstance(humanize, (int, float)):
-            set_into(config, 'humanize:maxTime', humanize)
+        # bool is a subclass of int, but MaskConfig expects maxTime to be a
+        # JSON number with a floating-point representation.
+        if isinstance(humanize, (int, float)) and not isinstance(humanize, bool):
+            set_into(config, 'humanize:maxTime', float(humanize))
 
     # Enable the main world context creation
     if main_world_eval:
         set_into(config, 'allowMainWorld', True)
+
+    # Allow addon open new tabs
+    if allow_addon_new_tab:
+        set_into(config, 'allowAddonNewtab', True)
 
     # Set Firefox user preferences
     if block_images:
@@ -604,8 +1015,17 @@ def launch_options(
         # If the user has provided a specific WebGL vendor/renderer pair, use it
         if webgl_config:
             webgl_fp = sample_webgl(target_os, *webgl_config)
+        elif config.get('webGl:vendor') and config.get('webGl:renderer'):
+            # Preset already set vendor/renderer — sample matching WebGL params
+            webgl_fp = sample_webgl(target_os, config['webGl:vendor'], config['webGl:renderer'])
         else:
-            webgl_fp = sample_webgl(target_os)
+            # Synthetic path: keep the GPU coherent with the screen BrowserForge
+            # already picked. Sampling the two independently yields pairs no
+            # real machine ships -- a discrete desktop GPU behind a 1024x600
+            # panel -- which consistency checks read as masking (#729).
+            webgl_fp = sample_webgl_for_screen(
+                target_os, config.get('screen.width'), config.get('screen.height')
+            )
         enable_webgl2 = webgl_fp.pop('webGl2Enabled')
 
         # Merge the WebGL fingerprint into the config
@@ -619,15 +1039,6 @@ def launch_options(
             },
         )
 
-    # Canvas anti-fingerprinting
-    merge_into(
-        config,
-        {
-            'canvas:aaOffset': randint(-50, 50),  # nosec
-            'canvas:aaCapOffset': True,
-        },
-    )
-
     # Cache previous pages, requests, etc (uses more memory)
     if enable_cache:
         merge_into(firefox_user_prefs, CACHE_PREFS)
@@ -638,25 +1049,42 @@ def launch_options(
         pprint(config)
 
     # Validate the config
+    warn_if_executable_predates_playwright(executable_path)
     validate_config(config, path=executable_path)
 
     # Prepare environment variables to pass to Camoufox
     env_vars = {
-        **get_env_vars(config, target_os),
+        **get_env_vars(config, target_os, path=executable_path),
         **env,
     }
     # Prepare the executable path
     if executable_path:
         executable_path = str(executable_path)
+    elif browser:
+        # Select a specific installed browser version
+        from .multiversion import find_installed_version
+
+        browser_path = find_installed_version(browser)
+        if not browser_path:
+            raise ValueError(
+                f"Browser version '{browser}' not found. Run `camoufox list` to see installed versions."
+            )
+        executable_path = launch_path(browser_path)
     else:
         executable_path = launch_path()
 
-    return {
+    result = {
         "executable_path": executable_path,
         "args": args,
         "env": env_vars,
         "firefox_user_prefs": firefox_user_prefs,
-        "proxy": proxy,
         "headless": headless,
         **(launch_options if launch_options is not None else {}),
     }
+    # Only include proxy if it's not None (Playwright 1.55+ validates this)
+    # https://github.com/coryking/camoufox/commit/1336e8e509e8c12a896a09d9ee51f131f739f106
+    # Thanks @coryking
+    if proxy is not None:
+        result["proxy"] = proxy
+
+    return result

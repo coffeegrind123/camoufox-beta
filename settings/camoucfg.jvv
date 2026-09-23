@@ -77,7 +77,9 @@
 
     "fonts": "array[str]",
     "fonts:spacing_seed": "int[>=0]",
-    
+    "audio:seed": "int[>=0]",
+    "canvas:seed": "int[>=0]",
+
     "AudioContext:sampleRate": "int[>=0]",
     "AudioContext:outputLatency": "double[>=0]",
     "AudioContext:maxChannelCount": "int[>=0]",
@@ -86,6 +88,7 @@
     "mediaDevices:webcams": "int[>=0]",
     "mediaDevices:speakers": "int[>=0]",
     "mediaDevices:enabled": "bool",
+    "media:spoof_codecs": "bool",
 
     "webGl:renderer$__WEBGL": "str",
     "webGl:vendor$__WEBGL": "str",
@@ -297,8 +300,10 @@
     "showcursor": "bool",
 
     "allowMainWorld": "bool",
+    "disableWorldIsolation": "bool",
+    "allowAddonNewtab": "bool",
     "forceScopeAccess": "bool",
-    "enableRemoteSubframes": "bool",
+
     "disableTheming": "bool",
     "memorysaver": "bool",
     "addons": "array[str]",

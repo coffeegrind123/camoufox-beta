@@ -6,11 +6,17 @@
 
 #include <memory>
 #include <set>
+#ifdef XP_WIN
+typedef int pid_t;  // libwebrtc headers reference pid_t which is POSIX-only
+#endif
 #include "api/video/video_frame.h"
 #include "api/video/video_sink_interface.h"
 #include "modules/video_capture/video_capture.h"
 #include "rtc_base/deprecated/recursive_critical_section.h"
 #include "video_engine/desktop_capture_impl.h"
+
+// Compatibility namespace alias: libwebrtc converted rtc:: to webrtc:: in Fx150
+namespace rtc = webrtc;
 
 class nsIWidget;
 
@@ -26,6 +32,7 @@ class HeadlessWindowCapturer : public webrtc::VideoCaptureModuleEx {
 
   void RegisterCaptureDataCallback(
       rtc::VideoSinkInterface<webrtc::VideoFrame>* dataCallback) override;
+  void DeRegisterCaptureDataCallback() override;
   void DeRegisterCaptureDataCallback(
       rtc::VideoSinkInterface<webrtc::VideoFrame>* dataCallback) override;
   int32_t StopCaptureIfAllClientsClose() override;

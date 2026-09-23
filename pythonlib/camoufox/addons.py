@@ -1,10 +1,14 @@
 import os
+import shutil
 from enum import Enum
 from multiprocessing import Lock
 from typing import List, Optional
 
 from .exceptions import InvalidAddonPath
-from .pkgman import get_path, unzip, webdl
+from .pkgman import INSTALL_DIR, unzip, webdl
+
+# Addons are stored in a shared folder, not per-browser version
+ADDONS_DIR = INSTALL_DIR / "addons"
 
 
 class DefaultAddons(Enum):
@@ -55,9 +59,9 @@ def download_and_extract(url: str, extract_path: str, name: str) -> None:
 
 def get_addon_path(addon_name: str) -> str:
     """
-    Returns a path to the addon
+    Returns a path to the addon in the shared addons folder.
     """
-    return get_path(os.path.join("addons", addon_name))
+    return str(ADDONS_DIR / addon_name)
 
 
 def maybe_download_addons(
@@ -71,14 +75,16 @@ def maybe_download_addons(
         # Get the addon path
         addon_path = get_addon_path(addon.name)
 
-        # Check if the addon is already extracted
-        if os.path.exists(addon_path):
+        # Check if the addon is already extracted. A bare directory is not
+        # enough: a failed download leaves an empty dir behind, so require the
+        # manifest that confirm_paths() looks for.
+        if os.path.exists(os.path.join(addon_path, 'manifest.json')):
             # Add the existing addon path to addons_list
             if addons_list is not None:
                 addons_list.append(addon_path)
             continue
 
-        # Addon doesn't exist, create directory and download
+        # Addon isn't extracted, create directory and download
         try:
             os.makedirs(addon_path, exist_ok=True)
             download_and_extract(addon.value, addon_path, addon.name)
@@ -86,4 +92,6 @@ def maybe_download_addons(
             if addons_list is not None:
                 addons_list.append(addon_path)
         except Exception as e:
+            # Drop the partial directory so the next run re-downloads.
+            shutil.rmtree(addon_path, ignore_errors=True)
             print(f"Failed to download and extract {addon.name}: {e}")

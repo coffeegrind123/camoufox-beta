@@ -20,21 +20,17 @@ export class JugglerFrameParent extends JSWindowActorParent {
     if (!this.manager?.isCurrentGlobal)
       return;
 
-    // Only interested in main frames for now.
-    if (this.browsingContext.parent)
-      return;
-
-    this._target = TargetRegistry.instance()?.targetForBrowserId(this.browsingContext.browserId);
-    if (!this._target)
-      return;
-
-    this.actorName = `browser::page[${this._target.id()}]/${this.browsingContext.browserId}/${this.browsingContext.id}/${this._target.nextActorSequenceNumber()}`;
-    this._target.setActor(this);
+    // Firefox 152+: the actor may be created BEFORE the chrome-side PageTarget
+    // exists (notably for window.open popups, where the content WindowGlobal is
+    // created before the `TabOpen` event fires). Delegate to the registry, which
+    // tracks the actor and binds it whenever the target appears — in either
+    // order. The previous implementation looked up the target here and bailed
+    // with no retry when it was missing, leaving the popup's page channel
+    // permanently unbound (Page.ready never sent -> no `popup` event).
+    TargetRegistry.instance()?.onActorCreated(this);
   }
 
   didDestroy() {
-    if (!this._target)
-      return;
-    this._target.removeActor(this);
+    TargetRegistry.instance()?.onActorDestroyed(this);
   }
 }

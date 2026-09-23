@@ -1,12 +1,9 @@
 import re
-import warnings
-from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
 import requests
-from urllib3.exceptions import InsecureRequestWarning
 
 from .exceptions import InvalidIP, InvalidProxy
 
@@ -78,13 +75,6 @@ def validate_ip(ip: str) -> None:
         raise InvalidIP(f"Invalid IP address: {ip}")
 
 
-@contextmanager
-def _suppress_insecure_warning():
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=InsecureRequestWarning)
-        yield
-
-
 @lru_cache(maxsize=None)
 def public_ip(proxy: Optional[str] = None) -> str:
     """
@@ -101,20 +91,19 @@ def public_ip(proxy: Optional[str] = None) -> str:
         "https://ipecho.net/plain",
     ]
 
-    exception = None
+    end_exception = None
     for url in URLS:
         try:
-            with _suppress_insecure_warning():
-                resp = requests.get(  # nosec
-                    url,
-                    proxies=Proxy.as_requests_proxy(proxy) if proxy else None,
-                    timeout=5,
-                    verify=False,
-                )
+            resp = requests.get(
+                url,
+                proxies=Proxy.as_requests_proxy(proxy) if proxy else None,
+                timeout=5,
+                verify=True,
+            )
             resp.raise_for_status()
             ip = resp.text.strip()
             validate_ip(ip)
             return ip
         except (requests.exceptions.ProxyError, requests.RequestException, InvalidIP) as exception:
-            pass
-    raise InvalidIP(f"Failed to get IP address: {exception}")
+            end_exception = exception
+    raise InvalidIP(f"Failed to get IP address: {end_exception}")

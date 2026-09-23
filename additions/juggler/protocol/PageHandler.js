@@ -9,6 +9,7 @@ const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys
 const {NetworkObserver, PageNetwork} = ChromeUtils.importESModule('chrome://juggler/content/NetworkObserver.js');
 const {PageTarget} = ChromeUtils.importESModule('chrome://juggler/content/TargetRegistry.js');
 const {setTimeout} = ChromeUtils.importESModule('resource://gre/modules/Timer.sys.mjs');
+const {MouseDispatch} = ChromeUtils.importESModule('chrome://juggler/content/input/MouseDispatch.js');
 
 const Cc = Components.classes;
 const Ci = Components.interfaces;
@@ -81,6 +82,9 @@ export class PageHandler {
 
     this._isDragging = false;
     this._lastMousePosition = { x: 0, y: 0 };
+    // Camoufox: last position an actual mousemove landed on. Used as the
+    // start point for the humanized cursor trajectory (humanize=True).
+    this._lastTrackedPos = { x: 0, y: 0 };
 
     this._reportedFrameIds = new Set();
     this._networkEventsForUnreportedFrameIds = new Map();
@@ -326,7 +330,7 @@ export class PageHandler {
     return await this._contentPage.send('adoptNode', options);
   }
 
-  async ['Page.screenshot']({ mimeType, clip, omitDeviceScaleFactor, quality = 80}) {
+  async ['Page.screenshot']({ mimeType, clip, omitDeviceScaleFactor, quality }) {
     const rect = new DOMRect(clip.x, clip.y, clip.width, clip.height);
 
     const browsingContext = this._pageTarget.linkedBrowser().browsingContext;
@@ -362,7 +366,8 @@ export class PageHandler {
       }
     }
 
-    const win = browsingContext.topChromeWindow.ownerGlobal;
+    // Firefox 152 removed `ownerGlobal`; `topChromeWindow` is already the chrome window.
+    const win = browsingContext.topChromeWindow;
     const canvas = win.document.createElementNS('http://www.w3.org/1999/xhtml', 'canvas');
     canvas.width = canvasWidth;
     canvas.height = canvasHeight;
@@ -370,7 +375,8 @@ export class PageHandler {
     ctx.drawImage(snapshot, 0, 0);
     snapshot.close();
 
-    if (mimeType === 'image/jpeg') {
+    if (mimeType === 'image/jpeg' || mimeType === 'image/webp') {
+      quality ??= mimeType === 'image/webp' ? 100 : 80;
       if (quality < 0 || quality > 100)
         throw new Error('Quality must be an integer value between 0 and 100; received ' + quality);
       quality /= 100;
@@ -450,7 +456,24 @@ export class PageHandler {
 
   async ['Page.reload']() {
     await this._pageTarget.activateAndRun(() => {
-      const doc = this._pageTarget._tab.linkedBrowser.ownerDocument;
+      const browser = this._pageTarget._tab.linkedBrowser;
+      // Camoufox: Firefox 146's Browser:Reload command is a no-op on about:blank
+      // (no history entry to reload). Fall back to a forced reloadWithFlags via
+      // browsingContext so the load event still fires and init scripts run.
+      try {
+        const uri = browser.currentURI?.spec;
+        if (uri === 'about:blank' || !uri) {
+          const bc = browser.browsingContext;
+          if (bc && typeof bc.reload === 'function') {
+            const Ci = Components.interfaces;
+            bc.reload(Ci.nsIWebNavigation.LOAD_FLAGS_NONE);
+            return;
+          }
+        }
+      } catch (e) {
+        dump(`juggler: reload-fallback failed: ${e}\n`);
+      }
+      const doc = browser.ownerDocument;
       doc.getElementById('Browser:Reload').doCommand();
     });
   }
@@ -495,36 +518,37 @@ export class PageHandler {
 
   async ['Page.dispatchMouseEvent']({type, x, y, button, clickCount, modifiers, buttons}) {
     const win = this._pageTarget._window;
+    const eventArgs = {button, clickCount, modifiers, buttons};
     const sendEvents = async (types) => {
       // 1. Scroll element to the desired location first; the coordinates are relative to the element.
       this._pageTarget._linkedBrowser.scrollRectIntoViewIfNeeded(x, y, 0, 0);
       // 2. Get element's bounding box in the browser after the scroll is completed.
-      const boundingBox = this._pageTarget._linkedBrowser.getBoundingClientRect();
+      //    MouseDispatch owns every conversion from these relative coordinates to
+      //    absolute ones, and every wait for a renderer ack.
+      const dispatch = MouseDispatch.forBrowser(win, this._pageTarget._linkedBrowser, eventArgs);
       // 3. Make sure compositor is flushed after scrolling.
       if (win.windowUtils.flushApzRepaints())
         await helper.awaitTopic('apz-repaints-flushed');
 
       const watcher = new EventWatcher(this._pageEventSink, types, this._pendingEventWatchers);
       const promises = [];
-      for (const type of types) {
-        // This dispatches to the renderer synchronously.
-        const jugglerEventId = win.windowUtils.jugglerSendMouseEvent(
-          type,
-          x + boundingBox.left,
-          y + boundingBox.top,
-          button,
-          clickCount,
-          modifiers,
-          false /* aIgnoreRootScrollFrame */,
-          0.0 /* pressure */,
-          0 /* inputSource */,
-          true /* isDOMEventSynthesized */,
-          false /* isWidgetEventSynthesized */,
-          buttons,
-          win.windowUtils.DEFAULT_MOUSE_POINTER_ID /* pointerIdentifier */,
-          false /* disablePointerEvent */
-        );
-        promises.push(watcher.ensureEvent(type, eventObject => eventObject.jugglerEventId === jugglerEventId));
+      for (const eventType of types) {
+        // Camoufox: when humanize is enabled, expand a direct mousemove into a
+        // human-like trajectory of intermediate mousemoves generated in C++
+        // (ChromeUtils.camouGetMouseTrajectory / MouseTrajectories.hpp).
+        if (eventType === 'mousemove' && ChromeUtils.camouGetBool('humanize', false)) {
+          const trajectory = ChromeUtils.camouGetMouseTrajectory(this._lastTrackedPos.x, this._lastTrackedPos.y, x, y);
+          // The first and last pairs are skipped: the last pair is the exact
+          // destination, which is dispatched explicitly below.
+          const points = [];
+          for (let i = 2; i < trajectory.length - 2; i += 2)
+            points.push([trajectory[i], trajectory[i + 1]]);
+          await dispatch.sendTrajectoryAcked(watcher, 'mousemove', points);
+          // Always finish exactly on the requested destination.
+          promises.push(dispatch.sendAcked(watcher, 'mousemove', x, y));
+        } else {
+          promises.push(dispatch.sendAcked(watcher, eventType, x, y));
+        }
       }
       await Promise.all(promises);
       await watcher.dispose();
@@ -536,31 +560,15 @@ export class PageHandler {
     await this._pageTarget.activateAndRun(async () => {
       this._pageTarget.ensureContextMenuClosed();
       // If someone asks us to dispatch mouse event outside of viewport, then we normally would drop it.
-      const boundingBox = this._pageTarget._linkedBrowser.getBoundingClientRect();
-      if (x < 0 || y < 0 || x > boundingBox.width || y > boundingBox.height) {
+      const dispatch = MouseDispatch.forBrowser(win, this._pageTarget._linkedBrowser, eventArgs);
+      if (!dispatch.isInViewport(x, y)) {
         if (type !== 'mousemove')
           return;
 
         // A special hack: if someone tries to do `mousemove` outside of
         // viewport coordinates, then move the mouse off from the Web Content.
         // This way we can eliminate all the hover effects.
-        // NOTE: since this won't go inside the renderer, there's no need to wait for ACK.
-        win.windowUtils.sendMouseEvent(
-          'mousemove',
-          0 /* x */,
-          0 /* y */,
-          button,
-          clickCount,
-          modifiers,
-          false /* aIgnoreRootScrollFrame */,
-          0.0 /* pressure */,
-          0 /* inputSource */,
-          true /* isDOMEventSynthesized */,
-          false /* isWidgetEventSynthesized */,
-          buttons,
-          win.windowUtils.DEFAULT_MOUSE_POINTER_ID /* pointerIdentifier */,
-          false /* disablePointerEvent */
-        );
+        dispatch.parkOffContent();
         return;
       }
 
@@ -582,8 +590,26 @@ export class PageHandler {
           return;
         }
 
+        // Skip a zero-displacement mousemove. When the destination rounds to the
+        // pixel the pointer is already on, the widget generates no eMouseMove, so
+        // the juggler-mouse-event-hit-renderer notification never fires and the
+        // sendEvents() call below awaits an ack that will never arrive. Because
+        // input dispatch is serialized on activateAndRun()'s process-global chain,
+        // that one stuck await wedges EVERY later input event for the life of the
+        // page. Reproduces on a stock build as the first action:
+        //     await page.mouse.move(0, 0);   // cursor starts at 0,0 -> no-op -> hang
+        // A no-op move has nothing to dispatch anyway, so return once the tracked
+        // position is (re)recorded.
+        if (Math.round(x) === Math.round(this._lastTrackedPos.x) &&
+            Math.round(y) === Math.round(this._lastTrackedPos.y)) {
+          this._lastTrackedPos = { x, y };
+          return;
+        }
         const watcher = new EventWatcher(this._pageEventSink, ['dragstart', 'juggler-drag-finalized'], this._pendingEventWatchers);
         await sendEvents(['mousemove']);
+        // Camoufox: remember where the cursor landed so the next humanized
+        // move starts its trajectory from the real previous position.
+        this._lastTrackedPos = { x, y };
 
         // The order of events after 'mousemove' is sent:
         // 1. [dragstart] - might or might NOT be emitted
@@ -629,24 +655,22 @@ export class PageHandler {
       // 1. Scroll element to the desired location first; the coordinates are relative to the element.
       this._pageTarget._linkedBrowser.scrollRectIntoViewIfNeeded(x, y, 0, 0);
       // 2. Get element's bounding box in the browser after the scroll is completed.
-      const boundingBox = this._pageTarget._linkedBrowser.getBoundingClientRect();
-
       const win = this._pageTarget._window;
+      const dispatch = MouseDispatch.forBrowser(win, this._pageTarget._linkedBrowser, {modifiers});
       // 3. Make sure compositor is flushed after scrolling.
       if (win.windowUtils.flushApzRepaints())
         await helper.awaitTopic('apz-repaints-flushed');
 
-      win.windowUtils.sendWheelEvent(
-        x + boundingBox.left,
-        y + boundingBox.top,
+      // Same conversion as a mouse event: a wheel at relative y == 0 would
+      // otherwise land on the chrome/content boundary and scroll the tab strip.
+      dispatch.sendWheel(x, y, {
         deltaX,
         deltaY,
         deltaZ,
         deltaMode,
-        modifiers,
         lineOrPageDeltaX,
         lineOrPageDeltaY,
-        0 /* options */);
+      });
     }, { muteNotificationsPopup: true });
   }
 

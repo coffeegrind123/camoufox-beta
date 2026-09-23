@@ -14,6 +14,14 @@ class MissingRelease(Exception):
     ...
 
 
+class CorruptedDownload(Exception):
+    """
+    Raised when a downloaded asset does not match its expected sha256 digest.
+    """
+
+    ...
+
+
 class UnsupportedArchitecture(Exception):
     """
     Raised when the architecture is not supported.
@@ -192,5 +200,11 @@ class CamoufoxNotInstalled(FileNotFoundError):
     """
     Raised when camoufox is not installed.
     """
+
+    ...
+
+
+class ProfileDirectoryError(RuntimeError):
+    """Raised when Camoufox's required runtime directory cannot be prepared."""
 
     ...

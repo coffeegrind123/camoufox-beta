@@ -40,6 +40,11 @@ void HeadlessWindowCapturer::RegisterCaptureDataCallback(rtc::VideoSinkInterface
 void HeadlessWindowCapturer::RegisterCaptureDataCallback(webrtc::RawVideoSinkInterface* dataCallback) {
 }
 
+void HeadlessWindowCapturer::DeRegisterCaptureDataCallback() {
+  rtc::CritScope lock2(&_callBackCs);
+  _dataCallBacks.clear();
+}
+
 void HeadlessWindowCapturer::DeRegisterCaptureDataCallback(rtc::VideoSinkInterface<webrtc::VideoFrame>* dataCallback) {
   rtc::CritScope lock2(&_callBackCs);
   auto it = _dataCallBacks.find(dataCallback);
@@ -90,7 +95,7 @@ int32_t HeadlessWindowCapturer::StartCapture(const webrtc::VideoCaptureCapabilit
     webrtc::VideoCaptureCapability frameInfo;
     frameInfo.width = dataSurface->GetSize().width;
     frameInfo.height = dataSurface->GetSize().height;
-#if MOZ_LITTLE_ENDIAN()
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     frameInfo.videoType = VideoType::kARGB;
 #else
     frameInfo.videoType = VideoType::kBGRA;
@@ -115,7 +120,7 @@ int32_t HeadlessWindowCapturer::StartCapture(const webrtc::VideoCaptureCapabilit
       return;
     }
 
-#if MOZ_LITTLE_ENDIAN()
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     const int conversionResult = libyuv::ARGBToI420(
 #else
     const int conversionResult = libyuv::BGRAToI420(

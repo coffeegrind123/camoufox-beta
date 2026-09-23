@@ -11,7 +11,8 @@ pacman := python python-pip p7zip go msitools wget aria2 sqlite
 .PHONY: help fetch setup setup-minimal clean set-target distclean build package \
         build-launcher check-arch revert edits run bootstrap mozbootstrap dir \
         package-linux package-macos package-windows vcredist_arch patch unpatch \
-        workspace check-arg edit-cfg ff-dbg tests update-ubo-assets generate-assets-car
+        workspace check-arg edit-cfg ff-dbg tests update-ubo-assets generate-assets-car \
+        setup-macos-sdk
 
 help:
 	@echo "Available targets:"
@@ -27,6 +28,7 @@ help:
 	@echo "  distclean       - Remove everything including downloads"
 	@echo "  build           - Build Camoufox"
 	@echo "  set-target      - Change the build target with BUILD_TARGET"
+	@echo "  setup-macos-sdk - Download the macOS SDK for cross-compilation"
 	@echo "  package-linux   - Package Camoufox for Linux"
 	@echo "  package-macos   - Package Camoufox for macOS"
 	@echo "  package-windows - Package Camoufox for Windows"
@@ -43,25 +45,6 @@ _ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 $(eval $(_ARGS):;@:)
 
 fetch:
-	# Fetching private patches...
-	@if [ -d "patches/private" ]; then \
-		echo "Found patches/private. Skipping private patches fetch..."; \
-	else \
-		if [ -z "$$CAMOUFOX_PASSWD" ]; then \
-			echo "CAMOUFOX_PASSWD environment variable not set. Skipping private patches..."; \
-		else \
-			echo "Fetching private patches..."; \
-			mkdir -p patches/closedsrc; \
-			if ! aria2c --dry-run "https://camoufox.com/pipeline/rev-$(closedsrc_rev).7z" 2>/dev/null; then \
-				echo "No private patches found for this version"; \
-				exit 1; \
-			else \
-				aria2c -o rev-$(closedsrc_rev).7z "https://camoufox.com/pipeline/rev-$(closedsrc_rev).7z" && \
-				7z x -p"$$CAMOUFOX_PASSWD" rev-$(closedsrc_rev).7z -o./patches/closedsrc && \
-				rm rev-$(closedsrc_rev).7z; \
-			fi; \
-		fi; \
-	fi
 	# Fetching the Firefox source tarball...
 	aria2c -x16 -s16 -k1M -o $(ff_source_tarball) "https://archive.mozilla.org/pub/firefox/releases/$(version)/source/firefox-$(version).source.tar.xz"; \
 
@@ -111,6 +94,17 @@ set-target:
 mozbootstrap:
 	cd $(cf_source_dir) && MOZBUILD_STATE_PATH=$$HOME/.mozbuild ./mach --no-interactive bootstrap --application-choice=browser
 
+setup-macos-sdk:
+	@if [ "$$(uname -s)" != "Darwin" ] && [ ! -f "$$HOME/.mozbuild/MacOSX26.5.sdk/SDKSettings.plist" ]; then \
+		echo "Downloading macOS 26.5 SDK..."; \
+		cd $(cf_source_dir) && env -u MOZ_AUTOMATION ./mach --no-interactive python --virtualenv build \
+			taskcluster/scripts/misc/unpack-sdk.py \
+			https://swcdn.apple.com/content/downloads/09/08/047-91568-A_Y1CFZWQCD4/4xekpyz43i26dbp4enxfro8eb1q7wiujh5/CLTools_macOSNMOS_SDK.pkg \
+			5db8b5a06a489a7d3ec587ebb7e01be55163128029923fc24edcad47faecd67830193c0d91e2643ee0e92f2ccca37adf20e4c42cf8de5784666f8663638b5cc5 \
+			Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+			"$$HOME/.mozbuild/MacOSX26.5.sdk"; \
+	fi
+
 bootstrap: dir
 	(sudo apt-get -y install $(debs) || sudo dnf -y install $(rpms) || sudo pacman -Sy $(pacman))
 	make mozbootstrap
@@ -130,8 +124,14 @@ checkpoint:
 	cd $(cf_source_dir) && git commit -m "Checkpoint" -uno
 
 clean:
-	cd $(cf_source_dir) && git clean -fdx && ./mach clobber
-	make revert
+	@if [ -e "$(cf_source_dir)/.git" ]; then \
+		cd "$(cf_source_dir)" && ./mach clobber && git clean -fdx; \
+		$(MAKE) revert; \
+	else \
+		echo "No git repo found in $(cf_source_dir); re-extracting Firefox source..."; \
+		rm -rf "$(cf_source_dir)"; \
+		$(MAKE) setup-minimal; \
+	fi
 
 distclean:
 	rm -rf $(cf_source_dir) $(ff_source_tarball)
@@ -160,7 +160,7 @@ package-linux:
 			settings/chrome.css \
 			settings/camoucfg.jvv \
 			settings/properties.json \
-			bundle/fontconfigs \
+			bundle/fontconfig \
 		--version $(version) \
 		--release $(release) \
 		--arch $(arch) \
@@ -183,7 +183,7 @@ package-windows:
 			settings/chrome.css \
 			settings/camoucfg.jvv \
 			settings/properties.json \
-			~/.mozbuild/vs/VC/Redist/MSVC/14.38.33135/$(vcredist_arch)/Microsoft.VC143.CRT/*.dll \
+			~/.mozbuild/vs/VC/Redist/MSVC/*/$(vcredist_arch)/Microsoft.VC*.CRT/*.dll \
 		--version $(version) \
 		--release $(release) \
 		--arch $(arch) \
@@ -243,11 +243,19 @@ workspace:
 	make first-checkpoint || true
 	make patch $(_ARGS)
 
+# The Playwright suite: upstream playwright-python at the tag ci/versions.py
+# resolves for this browser, fetched fresh, plus tests/camoufox/. The first run
+# builds a virtualenv under .ci-work/ and is slow; later runs reuse it.
 tests:
-	cd ./tests && \
-	bash run-tests.sh \
-		--executable-path ../$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
+	python3 -m ci.run_playwright \
+		--binary ./$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
 		$(if $(filter true,$(headful)),--headful,)
+
+# Lets tests/patches/*.py run against an unpackaged build. Not needed by `run`
+# or `tests`, which launch without the Python wrapper and so fall back to the
+# system fontconfig.
+stage-fonts:
+	bash scripts/stage-fonts.sh $(version) $(release)
 
 unbusy:
 	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
@@ -262,15 +270,5 @@ update-ubo-assets:
 
 generate-assets-car:
 	bash ./scripts/generate-assets-car.sh
-
-upload:
-	# ===============================
-	# This is only for internal use. You can ignore this.
-	# ===============================
-
-	@test -f .passwd || { echo "Error: .passwd file not found"; exit 1; }
-	@mkdir -p ../camoufox-web/internal
-	@rm -rf ../camoufox-web/pipeline/rev-$(closedsrc_rev).7z
-	7z a "-p$$(cat ./.passwd)" -mhe=on ../camoufox-web/pipeline/rev-$(closedsrc_rev).7z "./patches/private/*.patch"
 
 vcredist_arch := $(shell echo $(arch) | sed 's/x86_64/x64/' | sed 's/i686/x86/')

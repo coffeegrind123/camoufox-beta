@@ -11,6 +11,7 @@ launch.exe
 # Internal testing
 /extra-docs
 pythonlib/test*
+!pythonlib/tests/
 jsonvv/test*
 /.vscode
 /bundle/fonts/extra
@@ -21,6 +22,7 @@ scripts/test*
 .idea
 /tests/*.disabled
 k8s/
+camoufox-*.*.*/
 
 # Old data
 _old/
@@ -34,9 +36,12 @@ wget-log
 
 # Python interface
 venv/
+venv[0-9]*/
 __pycache__/
 *.pyc
 *.mmdb
+pythonlib-dev/
+run-pw-dev.py
 
 # Closed source patches
 private
@@ -44,6 +49,42 @@ private
 closedsrc
 
 .venv
-bundle
 *.pem
-.DS_store
+.DS_Store
+
+# Build outputs
+*.so
+/camoufox
+/omni.ja
+/precomplete
+/dependentlibs.list
+/application.ini
+/platform.ini
+/camoufox.cfg
+/camoucfg.jvv
+/chrome.css
+/properties.json
+/removed-files
+/nul
+/browser/
+/defaults/
+/distribution/
+/fontconfigs/
+/fonts/
+/gmp-clearkey/
+/windows-build/
+_bisect_extract/
+node_modules/
+
+node_modules/
+proxies.txt
+checks-bundle.js
+.env
+
+# Auto-update harness scratch space (evidence, fetched suites, build logs)
+.harness-work/
+
+# CI scratch space (results, junit, the sealed sundial report). Never
+# committed: this is where a stealth run's output lands, and an evidence
+# file in a public repository is permanent.
+.ci-work/

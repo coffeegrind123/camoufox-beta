@@ -7,6 +7,26 @@ const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Prefere
 const {ContextualIdentityService} = ChromeUtils.importESModule("resource://gre/modules/ContextualIdentityService.sys.mjs");
 const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
+// This module's scope has no timer globals (unlike the content-side juggler
+// scripts), so the screencast tick has to import them explicitly.
+const {setTimeout, clearTimeout} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
+
+// Last-resort bound on how long one callback may occupy the process-global
+// activation chain below. The chain must always advance: a callback that never
+// returns wedges every later input event in every tab, permanently.
+//
+// The per-ack deadline in MouseDispatch.js covers the await that has actually
+// caused all four shipped deadlocks, but it is one of several unbounded waits
+// reachable from a single slot -- apz-repaints-flushed, TabSwitchDone below,
+// the drag path's juggler-drag-finalized and dragover waits, and the
+// cross-process dispatchDragEvent sends all have the same shape. None of them
+// has failed yet. Bounding only the wait that has already bitten us is the
+// posture that produced those four fixes, so bound the slot itself too.
+//
+// Sized as a backstop, not a tuning knob: with a 5s ack deadline a legitimate
+// worst-case input slot approaches 10s, so this must sit well clear of that.
+const kActivationSlotBudgetMs = 30000;
+const kSlotExpired = Symbol('activation-slot-expired');
 
 const Cr = Components.results;
 
@@ -15,14 +35,18 @@ const helper = new Helper();
 const IDENTITY_NAME = 'JUGGLER ';
 const HUNDRED_YEARS = 60 * 60 * 24 * 365 * 100;
 
+// Capture rate for the compositor-backed screencast. Playwright muxes at 25fps
+// and repeats frames to fill gaps, so this is an upper bound on capture cost
+// rather than the video's frame rate; the ack-driven backpressure in
+// _startSnapshotScreencast lowers it further whenever encoding cannot keep up.
+const SNAPSHOT_SCREENCAST_FPS = 25;
+
 const ALL_PERMISSIONS = [
   'geo',
   'desktop-notification',
 ];
 
 let globalTabAndWindowActivationChain = Promise.resolve();
-// This is a workaround for https://github.com/microsoft/playwright/issues/34586
-let didCreateFirstPage = false;
 let globalNewPageChain = Promise.resolve();
 
 class DownloadInterceptor {
@@ -58,7 +82,7 @@ class DownloadInterceptor {
       try {
         file.create(Ci.nsIFile.NORMAL_FILE_TYPE, 0o600);
       } catch (e) {
-        dump(`WARNING: interceptDownloadRequest failed to create file: ${e}\n`);
+        dump(`WARNING: interceptDownloadRequest failed to create file: ${e}`);
         return false;
       }
     }
@@ -117,6 +141,14 @@ export class TargetRegistry {
     this._userContextIdToBrowserContext = new Map();
     this._browserToTarget = new Map();
     this._browserIdToTarget = new Map();
+    // Firefox 152+: a window.open() popup's content-process WindowGlobal actor
+    // (JugglerFrameParent.actorCreated) can be created BEFORE the chrome-side
+    // `TabOpen` fires and the PageTarget is registered. The old self-binding
+    // actor then found no target and bailed with no retry, so the popup's page
+    // channel never became ready -> `Page.ready` never reached the client ->
+    // `page.on('popup')` never fired. Track actors here so binding happens
+    // whenever either side appears, in either order (matches upstream Playwright).
+    this._browserIdToActor = new Map();
 
     this._proxiesWithClashingAuthCacheKeys = new Set();
     this._browserProxy = null;
@@ -180,7 +212,6 @@ export class TargetRegistry {
     const domWindowTabListeners = new Map();
 
     const onOpenWindow = async (appWindow) => {
-
       let domWindow;
       if (appWindow instanceof Ci.nsIAppWindow) {
         domWindow = appWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
@@ -203,6 +234,19 @@ export class TargetRegistry {
         await helper.awaitEvent(domWindow, 'DOMContentLoaded');
       }
 
+      // Firefox 150+: chrome window may report readyState=complete before
+      // gBrowser is populated. Wait for it if missing.
+      if (!domWindow.gBrowser) {
+        await new Promise((resolve, reject) => {
+          const start = Date.now();
+          const tick = () => {
+            if (domWindow.gBrowser) return resolve();
+            if (Date.now() - start > 15000) return reject(new Error('gBrowser never populated'));
+            domWindow.setTimeout(tick, 50);
+          };
+          tick();
+        });
+      }
       if (!domWindow.gBrowser)
         return;
       const tabContainer = domWindow.gBrowser.tabContainer;
@@ -310,10 +354,6 @@ export class TargetRegistry {
   }
 
   async newPage({browserContextId}) {
-    // When creating the very first page, we cannot create multiple in parallel.
-    // See https://github.com/microsoft/playwright/issues/34586.
-    if (didCreateFirstPage)
-      return this._newPageInternal({browserContextId});
     const result = globalNewPageChain.then(() => this._newPageInternal({browserContextId}));
     globalNewPageChain = result.catch(error => { /* swallow errors to keep chain running */ });
     return result;
@@ -368,7 +408,6 @@ export class TargetRegistry {
       if (await target.hasFailedToOverrideTimezone())
         throw new Error('Failed to override timezone');
     }
-    didCreateFirstPage = true;
     return target.id();
   }
 
@@ -382,6 +421,38 @@ export class TargetRegistry {
 
   targetForBrowserId(browserId) {
     return this._browserIdToTarget.get(browserId);
+  }
+
+  // Called from JugglerFrameParent.actorCreated for every main-frame
+  // WindowGlobalParent. Records the actor and binds it to its PageTarget if the
+  // target already exists; if not, PageTarget's constructor will bind it later.
+  onActorCreated(actor) {
+    // Only interested in main frames for now.
+    if (actor.browsingContext.parent)
+      return;
+    const browserId = actor.browsingContext.browserId;
+    this._browserIdToActor.set(browserId, actor);
+    const target = this._browserIdToTarget.get(browserId);
+    target?.setActor(actor);
+  }
+
+  onActorDestroyed(actor) {
+    // browsingContext can be null once the WindowGlobal is fully torn down.
+    const browserId = actor.browsingContext?.browserId;
+    if (browserId === undefined) {
+      // Fall back to clearing whichever entry points at this actor.
+      for (const [id, a] of this._browserIdToActor) {
+        if (a === actor) {
+          this._browserIdToTarget.get(id)?.removeActor(actor);
+          this._browserIdToActor.delete(id);
+        }
+      }
+      return;
+    }
+    const target = this._browserIdToTarget.get(browserId);
+    target?.removeActor(actor);
+    if (this._browserIdToActor.get(browserId) === actor)
+      this._browserIdToActor.delete(browserId);
   }
 }
 
@@ -430,13 +501,21 @@ export class PageTarget {
     this._disposed = false;
     browserContext.pages.add(this);
     this._registry._browserToTarget.set(this._linkedBrowser, this);
-    this._registry._browserIdToTarget.set(this._linkedBrowser.browsingContext.browserId, this);
+    const browserId = this._linkedBrowser.browsingContext.browserId;
+    this._registry._browserIdToTarget.set(browserId, this);
+    // Firefox 152+: the content-process actor may already exist (window.open
+    // popups create the actor before TabOpen). Bind it now so the page channel
+    // becomes ready and `Page.ready` reaches the client. See _browserIdToActor.
+    const actor = this._registry._browserIdToActor.get(browserId);
+    if (actor)
+      this.setActor(actor);
 
     this._registry.emit(TargetRegistry.Events.TargetCreated, this);
   }
 
   async activateAndRun(callback = () => {}, { muteNotificationsPopup = false } = {}) {
-    const ownerWindow = this._tab.linkedBrowser.ownerGlobal;
+    // Firefox 152 renamed `ownerGlobal` to `documentGlobal` on nodes.
+    const ownerWindow = this._tab.linkedBrowser.documentGlobal || this._tab.linkedBrowser.ownerGlobal;
     const tabBrowser = ownerWindow.gBrowser;
     // Serialize all tab-switching commands per tabbed browser
     // to disallow concurrent tab switching.
@@ -450,7 +529,18 @@ export class PageTarget {
       const notificationsPopup = muteNotificationsPopup ? this._linkedBrowser?.ownerDocument.getElementById('notification-popup') : null;
       notificationsPopup?.style.setProperty('pointer-events', 'none');
       try {
-        await callback();
+        let timer;
+        const expired = new Promise(resolve => {
+          timer = setTimeout(() => resolve(kSlotExpired), kActivationSlotBudgetMs);
+        });
+        try {
+          if (await Promise.race([callback(), expired]) === kSlotExpired) {
+            dump(`[juggler] WARN activation-chain slot exceeded ` +
+                 `${kActivationSlotBudgetMs}ms; advancing the chain without it\n`);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
       } finally {
         notificationsPopup?.style.removeProperty('pointer-events');
       }
@@ -469,6 +559,10 @@ export class PageTarget {
 
   setActor(actor) {
     this._actor = actor;
+    // Name the actor here (target-side) rather than in JugglerFrameParent so it
+    // is set no matter which side binds first. SimpleChannel.bindToActor reads
+    // actor.actorName for its debug channel name.
+    actor.actorName = `browser::page[${this.id()}]/${actor.browsingContext.browserId}/${actor.browsingContext.id}/${this.nextActorSequenceNumber()}`;
     this._channel.bindToActor(actor);
   }
 
@@ -531,8 +625,13 @@ export class PageTarget {
 
   updateCacheDisabled(browsingContext = this._linkedBrowser.browsingContext) {
     const enableFlags = Ci.nsIRequest.LOAD_NORMAL;
-    const disableFlags = Ci.nsIRequest.LOAD_BYPASS_CACHE |
-                  Ci.nsIRequest.INHIBIT_CACHING;
+    // Camoufox: upstream also sets LOAD_BYPASS_CACHE here, which makes necko put
+    // "Pragma: no-cache" and "Cache-Control: no-cache" on every request. Firefox only
+    // does that for a forced reload, and Playwright turns this on for every page.route()
+    // call, so it marks all our traffic as automated. INHIBIT_CACHING alone stops
+    // responses from ever being stored, which starves the cache just as effectively
+    // without announcing it to the server.
+    const disableFlags = Ci.nsIRequest.INHIBIT_CACHING;
 
     browsingContext.defaultLoadFlags = (this._browserContext.disableCache || this.disableCache) ? disableFlags : enableFlags;
   }
@@ -762,7 +861,8 @@ export class PageTarget {
     if (width < 10 || width > 10000 || height < 10 || height > 10000)
       throw new Error("Invalid size");
 
-    const docShell = this._gBrowser.ownerGlobal.docShell;
+    // Firefox 152 renamed `ownerGlobal` to `documentGlobal` on nodes.
+    const docShell = (this._gBrowser.documentGlobal || this._gBrowser.ownerGlobal).docShell;
     // Exclude address bar and navigation control from the video.
     const rect = this.linkedBrowser().getBoundingClientRect();
     const devicePixelRatio = this._window.devicePixelRatio;
@@ -802,7 +902,29 @@ export class PageTarget {
     if (width < 10 || width > 10000 || height < 10 || height > 10000)
       throw new Error("Invalid size");
 
-    const docShell = this._gBrowser.ownerGlobal.docShell;
+    // nsScreencastService only has a working capture source when the browser is
+    // headless (HeadlessWindowCapturer). Outside headless it falls through to
+    // libwebrtc's X11 window capturer, which does not work here in either
+    // configuration:
+    //
+    //   * without the XComposite extension, startVideoRecording() succeeds and
+    //     then never delivers a single frame -- the recording silently comes
+    //     out as Playwright's blank filler;
+    //   * with XComposite enabled, the browser segfaults during capture;
+    //   * on Wayland it cannot start at all, because
+    //     nsWindow::GetNativeData(NS_NATIVE_WINDOW_WEBRTC_DEVICE_ID) is
+    //     documented as unhandled there and returns null, so the service throws
+    //     NS_ERROR_FAILURE ("Failed to get native window id").
+    //
+    // Capture from the compositor instead. drawSnapshot() is what
+    // Page.screenshot already uses, it renders the page content directly, and
+    // it is independent of the windowing system -- so headful, Xvfb and Wayland
+    // all record identically.
+    if (!Services.appinfo.headless)
+      return this._startSnapshotScreencast({ width, height, quality });
+
+    // Firefox 152 renamed `ownerGlobal` to `documentGlobal` on nodes.
+    const docShell = (this._gBrowser.documentGlobal || this._gBrowser.ownerGlobal).docShell;
     // Exclude address bar and navigation control from the video.
     const rect = this.linkedBrowser().getBoundingClientRect();
     const devicePixelRatio = this._window.devicePixelRatio;
@@ -812,7 +934,16 @@ export class PageTarget {
       QueryInterface: ChromeUtils.generateQI([Ci.nsIScreencastServiceClient]),
       screencastFrame(data, deviceWidth, deviceHeight) {
         if (self._screencastRecordingInfo)
-          self.emit(PageTarget.Events.ScreencastFrame, { data, deviceWidth, deviceHeight });
+          self.emit(PageTarget.Events.ScreencastFrame, {
+            data,
+            deviceWidth,
+            deviceHeight,
+            // nsIScreencastServiceClient does not hand us the capture time, so
+            // stamp it on arrival. The frame was just encoded on the capture
+            // thread, so this is within a frame interval of the real swap time
+            // -- close enough for the recorder's frame pacing.
+            timestamp: Date.now() / 1000,
+          });
       },
       screencastStopped() {
       },
@@ -823,18 +954,130 @@ export class PageTarget {
     return { screencastId };
   }
 
+  // Compositor-backed screencast, used whenever the native capturer has no
+  // usable source (see startScreencast). Frames come from the same
+  // drawSnapshot() call Page.screenshot uses, so this works headful, under Xvfb
+  // and on Wayland alike.
+  _startSnapshotScreencast({ width, height, quality }) {
+    const screencastId = Services.uuid.generateUUID().toString().replace(/[{}-]/g, '');
+    const jpegQuality = Math.min(Math.max(quality ?? 90, 0), 100) / 100;
+    const state = {
+      stopped: false,
+      // Mirrors nsScreencastService's kMaxFramesInFlight = 1: hold the next
+      // capture until the client acks the previous frame, so a slow consumer
+      // throttles the capture instead of queueing unbounded JPEGs.
+      inFlight: false,
+    };
+    this._screencastRecordingInfo = { screencastId, snapshotState: state };
+
+    const captureFrame = async () => {
+      const browsingContext = this.linkedBrowser()?.browsingContext;
+      const windowGlobal = browsingContext?.currentWindowGlobal;
+      if (!windowGlobal)
+        return;
+
+      const viewport = this._viewportSize || this._browserContext.defaultViewportSize;
+      const rect = viewport
+        ? new DOMRect(0, 0, viewport.width, viewport.height)
+        : this.linkedBrowser().getBoundingClientRect();
+      if (!rect.width || !rect.height)
+        return;
+
+      // Fit inside the requested frame without distorting; ffmpeg pads the rest.
+      const scale = Math.min(width / rect.width, height / rect.height);
+      const frameWidth = Math.max(1, Math.round(rect.width * scale));
+      const frameHeight = Math.max(1, Math.round(rect.height * scale));
+
+      // drawSnapshot rejects with NS_ERROR_LOSS_OF_SIGNIFICANT_DATA while a
+      // navigation is in flight. Drop that frame rather than ending the video.
+      let snapshot;
+      try {
+        snapshot = await windowGlobal.drawSnapshot(
+          new DOMRect(0, 0, rect.width, rect.height), scale, 'rgb(255,255,255)');
+      } catch (e) {
+        return;
+      }
+      if (state.stopped) {
+        snapshot.close();
+        return;
+      }
+
+      const doc = this._window.document;
+      const canvas = doc.createElementNS('http://www.w3.org/1999/xhtml', 'canvas');
+      canvas.width = frameWidth;
+      canvas.height = frameHeight;
+      canvas.getContext('2d').drawImage(snapshot, 0, 0);
+      snapshot.close();
+
+      const dataURL = canvas.toDataURL('image/jpeg', jpegQuality);
+      state.inFlight = true;
+      this.emit(PageTarget.Events.ScreencastFrame, {
+        data: dataURL.substring(dataURL.indexOf(',') + 1),
+        // The viewport this frame depicts -- NOT the JPEG's own dimensions.
+        // Playwright's Firefox delegate maps deviceWidth/deviceHeight straight
+        // onto the client-visible viewportWidth/viewportHeight, and every other
+        // backend fills them from the page's viewport: the native path above
+        // sends pageWidth/pageHeight (clamped to the viewport, never scaled by
+        // the requested frame size), and the Chromium delegate forwards CDP's
+        // metadata.deviceWidth. Sending frameWidth/frameHeight here made the
+        // pair track `size=` instead, so a client asking for a 500x400 frame of
+        // a 1000x400 page was told the viewport was 500x200 -- and asking for a
+        // frame larger than the page reported a viewport larger than the page.
+        // The scaled dimensions are still carried by the JPEG itself, which is
+        // where a consumer that wants the image size reads them from.
+        deviceWidth: Math.round(rect.width),
+        deviceHeight: Math.round(rect.height),
+        timestamp: Date.now() / 1000,
+      });
+    };
+
+    const intervalMs = 1000 / SNAPSHOT_SCREENCAST_FPS;
+    const tick = async () => {
+      if (state.stopped)
+        return;
+      if (!state.inFlight) {
+        try {
+          await captureFrame();
+        } catch (e) {
+          dump(`juggler: snapshot screencast frame failed: ${e}\n`);
+        }
+      }
+      if (!state.stopped)
+        state.timer = setTimeout(tick, intervalMs);
+    };
+    state.timer = setTimeout(tick, 0);
+
+    return { screencastId };
+  }
+
   screencastFrameAck({ screencastId }) {
-    if (!this._screencastRecordingInfo || this._screencastRecordingInfo.screencastId !== screencastId)
+    const info = this._screencastRecordingInfo;
+    if (!info)
       return;
-    screencastService.screencastFrameAck(screencastId);
+    // A client that omits the id is acking whatever is currently recording --
+    // there can only be one screencast per page target. Only reject an id that
+    // is present and refers to some other (stale) session.
+    if (screencastId !== undefined && screencastId !== info.screencastId)
+      return;
+    if (info.snapshotState) {
+      info.snapshotState.inFlight = false;
+      return;
+    }
+    screencastService.screencastFrameAck(info.screencastId);
   }
 
   stopScreencast() {
-    if (!this._screencastRecordingInfo)
+    const info = this._screencastRecordingInfo;
+    if (!info)
       throw new Error('No screencast in progress');
-    const { screencastId } = this._screencastRecordingInfo;
     this._screencastRecordingInfo = undefined;
-    screencastService.stopVideoRecording(screencastId);
+    if (info.snapshotState) {
+      info.snapshotState.stopped = true;
+      if (info.snapshotState.timer)
+        clearTimeout(info.snapshotState.timer);
+      return;
+    }
+    screencastService.stopVideoRecording(info.screencastId);
   }
 
   ensureContextMenuClosed() {

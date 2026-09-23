@@ -17,9 +17,11 @@
 #include "nsIRandomGenerator.h"
 #include "nsISupportsPrimitives.h"
 #include "nsThreadManager.h"
-#include "nsView.h"
-#include "nsViewManager.h"
 #include "modules/desktop_capture/desktop_capturer.h"
+
+// Compatibility namespace alias: libwebrtc converted rtc:: to webrtc:: in Fx150
+namespace rtc = webrtc;
+
 #include "modules/desktop_capture/desktop_capture_options.h"
 #include "modules/desktop_capture/desktop_frame.h"
 #include "modules/video_capture/video_capture.h"
@@ -239,7 +241,7 @@ class nsScreencastService::Session : public rtc::VideoSinkInterface<webrtc::Vide
     info.image_width = screenshotWidth;
     info.image_height = screenshotHeight;
 
-#if MOZ_LITTLE_ENDIAN()
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     if (frameInfo.videoType == webrtc::VideoType::kARGB)
       info.in_color_space = JCS_EXT_BGRA;
     if (frameInfo.videoType == webrtc::VideoType::kBGRA)
@@ -324,13 +326,9 @@ nsresult nsScreencastService::StartVideoRecording(nsIScreencastServiceClient* aC
   PresShell* presShell = aDocShell->GetPresShell();
   if (!presShell)
     return NS_ERROR_UNEXPECTED;
-  nsViewManager* viewManager = presShell->GetViewManager();
-  if (!viewManager)
+  nsIWidget* widget = presShell->GetRootWidget();
+  if (!widget)
     return NS_ERROR_UNEXPECTED;
-  nsView* view = viewManager->GetRootView();
-  if (!view)
-    return NS_ERROR_UNEXPECTED;
-  nsIWidget* widget = view->GetWidget();
 
   rtc::scoped_refptr<webrtc::VideoCaptureModuleEx> capturer = nullptr;
   for (auto& it : mIdToSession) {

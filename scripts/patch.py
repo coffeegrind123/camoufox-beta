@@ -34,6 +34,15 @@ Main patcher functions
 """
 
 
+def reset_to_unpatched():
+    """Reset this source repository without discovering a parent repository."""
+    if not os.path.exists('.git'):
+        return
+
+    print("Resetting to unpatched state...")
+    run('git reset --hard unpatched && ./mach clobber && git clean -fdx')
+
+
 @dataclass
 class Patcher:
     """Patch and prepare the Camoufox source"""
@@ -47,9 +56,8 @@ class Patcher:
         """
         version, release = extract_args()
         with temp_cd(find_src_dir('.', version, release)):
-            # Reset to unpatched state first (like "Find broken patches")
-            print("Resetting to unpatched state...")
-            run('git clean -fdx && ./mach clobber && git reset --hard unpatched', exit_on_fail=False)
+            # Reset only when the source tree has its own local repository.
+            reset_to_unpatched()
 
             # Re-copy additions and settings after reset
             print("Re-copying additions and settings...")
@@ -109,11 +117,13 @@ class Patcher:
         Apply a patch and check for reject files.
         Returns list of reject files if any, empty list otherwise.
         """
-        import subprocess
-        import os
+        import time
 
         print(f"\n*** -> patch -p1 -i {patch_file}")
         sys.stdout.flush()
+
+        # Record time before applying so we only detect .rej files from this patch
+        start_time = time.time()
 
         # Apply patch interactively - don't capture stdout/stderr at all
         # This allows prompts to show immediately and user can respond
@@ -128,18 +138,20 @@ class Patcher:
             text=True
         )
 
-        # After patch completes, search for any .rej files created
+        # After patch completes, search for any .rej files created during this patch
         rejects = []
         for root, dirs, files in os.walk('.'):
             for file in files:
                 if file.endswith('.rej'):
-                    # Check if this is a newly created reject file
                     reject_path = os.path.join(root, file)
-                    # Only include if it was just created (within last minute)
                     if os.path.exists(reject_path):
-                        import time
-                        if time.time() - os.path.getmtime(reject_path) < 60:
+                        # Only include if created after this patch started
+                        if os.path.getmtime(reject_path) >= start_time:
                             rejects.append(reject_path)
+
+        # Clean up .rej files so they don't interfere with subsequent patches
+        for rej in rejects:
+            os.remove(rej)
 
         return rejects
 
@@ -192,7 +204,7 @@ def add_rustup(*targets):
 def _update_rustup(target):
     """Add rust targets for the given target"""
     if target == "linux":
-        add_rustup("aarch64-unknown-linux-gnu", "i686-unknown-linux-gnu")
+        add_rustup("aarch64-unknown-linux-gnu")
     elif target == "windows":
         add_rustup("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "i686-pc-windows-msvc")
     elif target == "macos":

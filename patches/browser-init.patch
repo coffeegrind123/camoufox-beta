@@ -83,23 +83,27 @@ index 1cfa4b8497..bdf8d7202e 100644
      // Wait until chrome is painted before executing code not critical to making the window visible
      this._boundDelayedStartup = this._delayedStartup.bind(this);
      window.addEventListener("MozAfterPaint", this._boundDelayedStartup);
-@@ -366,9 +417,152 @@ var gBrowserInit = {
+@@ -366,9 +417,156 @@ var gBrowserInit = {
        )?.removeAttribute("key");
      }
  
 +    // Set default size
 +    window.resizeTo(1280, 1040);
 +
-+    // Hijack the outer window size
++    // Hijack the outer window size.
++    //
++    // window.outerWidth/outerHeight are already spoofed unconditionally in C++
++    // (nsGlobalWindowInner::GetOuterWidth/GetOuterHeight consult MaskConfig, see
++    // fingerprint-injection.patch), so the chrome window only has to be *resized*
++    // here -- it must not be pinned. Pinning documentElement to the spoofed size
++    // caps .browserStack, which caps the content viewport, which makes Juggler's
++    // awaitViewportDimensions handshake unsatisfiable for any larger viewport.
++    // That await has no timeout, so it hangs forever (daijro/camoufox#666).
 +    let outerWidth, outerHeight;
 +    if ((outerWidth = ChromeUtils.camouGetInt("window.outerWidth"))) {
-+      document.documentElement.style.setProperty('width', outerWidth + 'px');
-+      browser.style.setProperty('width', outerWidth + 'px');
 +      window.resizeTo(outerWidth, window.outerHeight);
 +    }
 +    if ((outerHeight = ChromeUtils.camouGetInt("window.outerHeight"))) {
-+      document.documentElement.style.setProperty('height', outerHeight + 'px');
-+      browser.style.setProperty('height', outerHeight + 'px');
 +      window.resizeTo(window.outerWidth, outerHeight);
 +    }
 +    browser.style.setProperty('box-sizing', 'content-box');

@@ -17,8 +17,10 @@ jobs:
           # Fails (.mozbuild does not include clang++-cl)
           - target: windows
             arch: arm64
-          # Unsuported
+          # Unsupported
           - target: macos
+            arch: i686
+          - target: linux
             arch: i686
 
     steps:
@@ -82,7 +84,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y msitools p7zip-full aria2
+          # ccache: the mozconfig enables --with-ccache, but the runner image no
+          # longer ships it, so configure fails with "Cannot find ccache".
+          sudo apt-get install -y msitools p7zip-full aria2 ccache
 
       - name: Fetch source
         env:
@@ -98,13 +102,18 @@ jobs:
 
       - name: Create swap space
         run: |
-          sudo fallocate -l 16G /swapfile
+          sudo fallocate -l 24G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
+          df -h /
 
       - name: Build
+        env:
+          # Cap Rust parallelism to lower peak memory (avoids OOM/SIGTERM).
+          # Tune to taste: higher = faster but more RAM.
+          CARGO_BUILD_JOBS: "1"
         run: python3 ./multibuild.py --target ${{ matrix.target }} --arch ${{ matrix.arch }}
 
       - name: Upload artifacts
@@ -132,6 +141,6 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
           draft: true
-          prerelease: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

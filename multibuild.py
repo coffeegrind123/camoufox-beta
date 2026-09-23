@@ -39,7 +39,6 @@ def setup_linux_sysroots():
     sysroots = [
         ('sysroot-aarch64-linux-gnu', 'aarch64-linux-gnu'),
         ('sysroot-x86_64-linux-gnu', 'x86_64-linux-gnu'),
-        ('sysroot-i686-linux-gnu', 'i686-linux-gnu'),
     ]
 
     for sysroot_name, lib_arch in sysroots:
@@ -150,6 +149,7 @@ def main():
     # Generate Assets.car if building for macOS
     if 'macos' in args.target:
         BSYS.generate_assets_car()
+        run('make setup-macos-sdk')
 
     # Ensure dist directory exists
     os.makedirs('dist', exist_ok=True)
@@ -161,7 +161,11 @@ def main():
     # Run build
     for target in args.target:
         for arch in args.arch:
-            if (target, arch) in [("windows", "arm64"), ("macos", "i686")]:
+            if (target, arch) in [
+                ("windows", "arm64"),
+                ("macos", "i686"),
+                ("linux", "i686"),
+            ]:
                 print(f"Skipping {target} {arch}: Unsupported architecture.")
                 continue
             run_build(target, arch)
