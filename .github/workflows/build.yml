@@ -11,17 +11,10 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        target: [linux, windows, macos]
-        arch: [x86_64, arm64, i686]
-        exclude:
-          # Fails (.mozbuild does not include clang++-cl)
-          - target: windows
-            arch: arm64
-          # Unsupported
-          - target: macos
-            arch: i686
-          - target: linux
-            arch: i686
+        # This fork only ships the Linux x86_64 build its Docker image runs;
+        # the other five targets cost ~10 runner-hours per release for nothing.
+        target: [linux]
+        arch: [x86_64]
 
     steps:
       - name: Maximize build space
@@ -140,7 +133,9 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
-          draft: true
+          # Published, not draft: draft assets need auth, and the Docker image
+          # downloads the zip by its public release URL.
+          draft: false
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
