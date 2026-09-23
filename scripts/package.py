@@ -11,7 +11,11 @@ from shlex import join
 
 from _mixin import find_src_dir, get_moz_target, list_files, run, temp_cd
 
-UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender', 'vaapitest', 'glxtest'}
+# glxtest and vaapitest are NOT unneeded: they are Gecko's GPU probes. Without
+# glxtest, Firefox on Linux has no GL info on a real X display and refuses every
+# WebGL context ("Exhausted GL driver options", FEATURE_FAILURE_WEBGL_EXHAUSTED_DRIVERS)
+# -- a browser claiming a GPU with no WebGL at all. Stock Firefox ships both.
+UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender'}
 
 
 def inject_locales(target_dir, target, version, src_dir):
