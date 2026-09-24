@@ -130,10 +130,13 @@ async def test():
     )
     audio = fp4["config"]["audio:seed"]
     canvas = fp4["config"]["canvas:seed"]
-    if audio != 0 and canvas != 0:
-        print(f"  audio:seed={audio}, canvas:seed={canvas} (both non-zero): PASS")
+    # Audio noise is off unless the preset sets a seed (stock Firefox renders
+    # the audio probe identically everywhere); canvas gets a random seed.
+    want_audio = preset4.get("audio:seed", 0)
+    if audio == want_audio and canvas != 0:
+        print(f"  audio:seed={audio} (preset/default {want_audio}), canvas:seed={canvas} (non-zero): PASS")
     else:
-        failures.append(f"Other seeds affected: audio={audio}, canvas={canvas}")
+        failures.append(f"Other seeds affected: audio={audio} (want {want_audio}), canvas={canvas}")
         print(f"  audio={audio}, canvas={canvas}: FAIL")
 
     # --- Summary ---
