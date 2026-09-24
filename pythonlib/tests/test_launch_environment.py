@@ -101,21 +101,22 @@ class TestFontFallbackAsyncPref:
             i_know_what_im_doing=True,
         )["firefox_user_prefs"]
 
-    def test_linux_disables_async_font_fallback(self, isolated_launch_dependencies):
-        prefs = self._prefs_for("Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0", None)
-        assert prefs[self.PREF] is False
+    LINUX_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0"
+    MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0"
+    WIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0"
 
-    def test_macos_keeps_async_font_fallback(self, isolated_launch_dependencies):
-        prefs = self._prefs_for(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0", None
-        )
-        assert self.PREF not in prefs
+    # The skip is in the Linux platform code, so it follows the HOST: a
+    # Windows identity on a Linux host rendered Korean, Tamil and Myanmar as
+    # .notdef with Windows' font prefs and async fallback on.
+    def test_a_linux_host_disables_it_for_every_identity(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "lin")
+        for ua in (self.LINUX_UA, self.MAC_UA, self.WIN_UA):
+            assert self._prefs_for(ua, None)[self.PREF] is False, ua
 
-    def test_windows_keeps_async_font_fallback(self, isolated_launch_dependencies):
-        prefs = self._prefs_for(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0", None
-        )
-        assert self.PREF not in prefs
+    def test_a_macos_host_keeps_it(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "mac")
+        for ua in (self.MAC_UA, self.WIN_UA):
+            assert self.PREF not in self._prefs_for(ua, None), ua
 
     def test_caller_pref_wins(self, isolated_launch_dependencies):
         prefs = utils.launch_options(
@@ -252,3 +253,44 @@ class TestNativeWindowsVariantFonts:
         from camoufox import fingerprints as fp
         assert fp._host_has_variant_fonts("linux") is False
         assert fp._host_has_variant_fonts("macos") is False
+
+
+class TestStockFontPrefs:
+    """A Windows or macOS identity resolves generics and per-language fonts
+    with that OS's stock font.* defaults (font-prefs.json, from all.js).
+
+    The build only carries its own platform's defaults: a Windows identity
+    drew Thai through fontconfig's 'serif' where Windows names Tahoma, and
+    emoji with Noto Color Emoji where Windows names Segoe UI Emoji.
+    """
+
+    WIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0"
+    LINUX_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0"
+
+    def _prefs(self, ua, **kw):
+        return utils.launch_options(
+            config={"navigator.userAgent": ua}, i_know_what_im_doing=True, **kw
+        )["firefox_user_prefs"]
+
+    def test_a_windows_identity_gets_windows_font_defaults(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "lin")
+        prefs = self._prefs(self.WIN_UA)
+        assert prefs["font.name-list.emoji"] == "Segoe UI Emoji, Twemoji Mozilla"
+        assert prefs["font.name-list.serif.th"] == "Tahoma"
+        assert prefs["font.name-list.sans-serif.x-western"] == "Arial"
+
+    def test_name_lists_only_linux_sets_are_emptied(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "lin")
+        prefs = self._prefs(self.WIN_UA)
+        # Windows sets no cursive list for Tamil; Linux's would otherwise apply.
+        assert prefs["font.name-list.cursive.x-tamil"] == ""
+
+    def test_the_host_identity_gets_none(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "lin")
+        prefs = self._prefs(self.LINUX_UA)
+        assert not [k for k in prefs if k.startswith("font.name-list.")]
+
+    def test_a_caller_pref_wins(self, isolated_launch_dependencies, monkeypatch):
+        monkeypatch.setattr(utils, "_host_os_key", lambda: "lin")
+        prefs = self._prefs(self.WIN_UA, firefox_user_prefs={"font.name-list.serif.th": "Leelawadee UI"})
+        assert prefs["font.name-list.serif.th"] == "Leelawadee UI"

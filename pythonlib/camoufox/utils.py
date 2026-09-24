@@ -144,6 +144,25 @@ def _host_os_key() -> Optional[str]:
     return {'Darwin': 'mac', 'Windows': 'win', 'Linux': 'lin'}.get(platform.system())
 
 
+_FONT_PREFS_OS = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}
+
+
+def _stock_font_prefs(target_os: str, build_os: str) -> Dict[str, Any]:
+    """The font.* prefs that make a build for `build_os` resolve fonts the way
+    stock Firefox does on `target_os` (font-prefs.json, from all.js by
+    scripts/gen-font-prefs.py): the target's values where they differ, and an
+    empty list for name-lists only the build's platform sets."""
+    with open(os.path.join(os.path.dirname(__file__), 'font-prefs.json'), 'rb') as f:
+        table = orjson.loads(f.read())
+    target = table[_FONT_PREFS_OS[target_os]]
+    build = table[_FONT_PREFS_OS[build_os]]
+    prefs = {k: v for k, v in target.items() if build.get(k) != v}
+    for k, v in build.items():
+        if k not in target and isinstance(v, str):
+            prefs[k] = ''
+    return prefs
+
+
 def _generate_fontconfig(
     fontconfig_path: str, path: Optional[Path] = None, os_dir: Optional[str] = None
 ) -> str:
@@ -1272,6 +1291,17 @@ def launch_options(
             firefox_user_prefs.setdefault('dom.webgpu.enabled', True)
             firefox_user_prefs.setdefault('dom.webgpu.external-texture.enabled', True)
 
+        # Per-language and generic fonts: the build only has its own platform's
+        # font.name-list defaults, so a Windows identity drew Thai through
+        # fontconfig's 'serif' where Windows names Tahoma, and emoji with Noto
+        # Color Emoji where Windows names Segoe UI Emoji. With stock Windows'
+        # values (plus fallback-fonts-claimed-os.patch for the per-script
+        # table, and unhinted advances in the bundled fonts.conf), 156 of 168
+        # per-script widths match stock 152.0.4 on Windows, against 75.
+        if target_os in ('win', 'mac') and _host_os_key() in _FONT_PREFS_OS:
+            for pref, value in _stock_font_prefs(target_os, _host_os_key()).items():
+                firefox_user_prefs.setdefault(pref, value)
+
     # Per-character font fallback, LINUX ONLY. Gecko's GlobalFontFallback walks
     # the shared font list for a family whose charmap covers the character; in a
     # content process with async fallback on it hits the
@@ -1286,7 +1316,11 @@ def launch_options(
     # forcing the synchronous scan changed the face picked for U+1E9E in Futura
     # (21.733 stock -> 27.267) -- measured on a stock Mac mini, 1/14 families
     # regressed. Windows is untested until a Windows build exists.
-    if target_os == 'lin':
+    # The skip belongs to the Linux platform code, not to the claimed OS, so
+    # a Windows or macOS identity on a Linux host needs it off too: with
+    # Windows' font prefs applied and async on, Korean, Tamil and Myanmar
+    # rendered as .notdef (153.9 px for all three) on a Windows identity.
+    if _host_os_key() == 'lin':
         firefox_user_prefs.setdefault('gfx.font_rendering.fallback.async', False)
 
     # Bundled fonts: on macOS and Windows the package's font bundle is
