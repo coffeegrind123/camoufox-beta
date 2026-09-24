@@ -84,7 +84,7 @@ diff --git a/dom/system/NetworkGeolocationProvider.sys.mjs b/dom/system/NetworkG
 index f89cf1b1a7..c2fc42998f 100644
 --- a/dom/system/NetworkGeolocationProvider.sys.mjs
 +++ b/dom/system/NetworkGeolocationProvider.sys.mjs
-@@ -357,17 +357,52 @@ NetworkGeolocationProvider.prototype = {
+@@ -357,17 +357,55 @@ NetworkGeolocationProvider.prototype = {
        Glean.geolocation.geolocationService.network_ip.add();
      }
  
@@ -121,7 +121,10 @@ index f89cf1b1a7..c2fc42998f 100644
 +        if (!accuracy) {
 +          let latPrecision = countDecimalPlaces(latitude);
 +          let lonPrecision = countDecimalPlaces(longitude);
-+          let precision = Math.min(latPrecision, lonPrecision);
++          // Capped at 4 places (~11 m): coordinates that went through a
++          // float32 (57.70650100708008) otherwise claimed 1e-10 m, a precision
++          // no receiver reports.
++          let precision = Math.min(latPrecision, lonPrecision, 4);
 +
 +          // Estimate accuracy in meters
 +          accuracy = (111320 * Math.cos(latitude * Math.PI / 180)) / Math.pow(10, precision);

@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000..abcdef1234
 --- /dev/null
 +++ b/dom/base/SpeechVoicesManager.cpp
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,79 @@
 +/* Camoufox: Per-context speech voices manager */
 +#include "SpeechVoicesManager.h"
 +
@@ -18,11 +18,13 @@ index 0000000000..abcdef1234
 +static mozilla::Mutex sVoicesMutex("SpeechVoicesManager");
 +static nsTHashMap<nsUint32HashKey, nsTHashSet<nsString>> sVoicesMap;
 +
-+nsString SpeechVoicesManager::DisabledKeyForUserContext(uint32_t aId) {
-+  nsAutoString key;
-+  key.AppendPrintf("spvoices_d_%u", aId);
-+  return key;
-+}
++// Camoufox: the "setter already called" flag is per process, like the list
++// itself. It used to live in RoverfoxStorageManager, which every process
++// shares, so the first process to run a context's init script hid the setter
++// from all the others -- and their pages kept the launch-wide list instead of
++// the context's own (lang315/camoufox#149). Page script is kept off the setter
++// by the per-window seal, not by this flag.
++static nsTHashSet<uint32_t> sDisabledIds;
 +
 +void SpeechVoicesManager::SetVoices(uint32_t aUserContextId,
 +                                     const nsAString& aVoiceList) {
@@ -63,7 +65,8 @@ index 0000000000..abcdef1234
 +}
 +
 +void SpeechVoicesManager::DisableFunction(uint32_t aId) {
-+  RoverfoxStorageManager::PutBool(DisabledKeyForUserContext(aId), true);
++  MutexAutoLock lock(sVoicesMutex);
++  sDisabledIds.Insert(aId);
 +}
 +
 +bool SpeechVoicesManager::IsFunctionEnabledForWebIDL(JSContext* aCx,
@@ -74,9 +77,8 @@ index 0000000000..abcdef1234
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
 +    id = bc->OriginAttributesRef().mUserContextId;
 +  }
-+  bool disabled = false;
-+  RoverfoxStorageManager::GetBool(DisabledKeyForUserContext(id), disabled);
-+  return !disabled;
++  MutexAutoLock lock(sVoicesMutex);
++  return !sDisabledIds.Contains(id);
 +}
 +
 +}  // namespace dom
@@ -86,7 +88,7 @@ new file mode 100644
 index 0000000000..bcdef12345
 --- /dev/null
 +++ b/dom/base/SpeechVoicesManager.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,27 @@
 +/* Camoufox: Per-context speech voices manager */
 +#ifndef mozilla_dom_SpeechVoicesManager_h
 +#define mozilla_dom_SpeechVoicesManager_h
@@ -108,8 +110,6 @@ index 0000000000..bcdef12345
 +                              const nsAString& aVoiceName);
 +  static void DisableFunction(uint32_t aId);
 +  static bool IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
-+ private:
-+  static nsString DisabledKeyForUserContext(uint32_t aId);
 +};
 +
 +}  // namespace dom

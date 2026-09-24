@@ -92,18 +92,23 @@ inline bool HasKey(const std::string& key, const nlohmann::json& data) {
   return data.contains(key);
 }
 
+// json.hpp maps JSON_THROW to std::abort() in this build, so .get<std::string>()
+// on a value of any other type kills the process. A wrongly typed key reads as
+// unset instead (lang315/camoufox, MaskConfig hardening).
 inline std::optional<std::string> GetString(const std::string& key) {
   const auto& data = GetJson();
-  if (!HasKey(key, data)) return std::nullopt;
+  if (!HasKey(key, data) || !data[key].is_string()) return std::nullopt;
   return data[key].get<std::string>();
 }
 
 inline std::vector<std::string> GetStringList(const std::string& key) {
   std::vector<std::string> result;
   const auto& data = GetJson();
-  if (!HasKey(key, data)) return {};
+  if (!HasKey(key, data) || !data[key].is_array()) return {};
   for (const auto& item : data[key]) {
-    result.push_back(item.get<std::string>());
+    if (item.is_string()) {
+      result.push_back(item.get<std::string>());
+    }
   }
   return result;
 }
@@ -228,7 +233,10 @@ inline std::optional<std::array<int32_t, 4>> GetInt32Rect(
 
 inline std::optional<nlohmann::json> GetNested(const std::string& domain,
                                                std::string keyStr) {
-  auto data = GetJson();
+  // A reference, not a copy: this runs on every table-answered WebGL
+  // getParameter, and a copy duplicated the whole parsed config (fonts,
+  // voices, WebGL tables) per call.
+  const auto& data = GetJson();
   if (!data.contains(domain)) return std::nullopt;
 
   if (!data[domain].contains(keyStr)) return std::nullopt;
@@ -313,7 +321,7 @@ inline std::optional<std::array<int32_t, 3UL>> MShaderData(
 inline std::optional<
     std::vector<std::tuple<std::string, std::string, std::string, bool, bool>>>
 MVoices() {
-  auto data = GetJson();
+  const auto& data = GetJson();
   if (!data.contains("voices") || !data["voices"].is_array()) {
     return std::nullopt;
   }
