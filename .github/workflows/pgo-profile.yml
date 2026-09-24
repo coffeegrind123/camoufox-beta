@@ -17,6 +17,10 @@ on:
         description: "Profile revision for this Firefox version (bump to retrain)"
         required: true
         default: "1"
+      reuse_build_from:
+        description: "Run id whose instrumented browser to train (skips the build; artifacts last 7 days)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -27,6 +31,7 @@ env:
 jobs:
   instrumented:
     name: Instrumented build
+    if: inputs.reuse_build_from == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
@@ -151,8 +156,13 @@ jobs:
   train:
     name: Training run
     needs: instrumented
+    # Runs after a fresh build, or alone against an earlier run's artifact.
+    if: always() && (needs.instrumented.result == 'success' || (needs.instrumented.result == 'skipped' && inputs.reuse_build_from != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    permissions:
+      contents: write
+      actions: read
     env:
       BUILD_TARGET: linux,x86_64
     steps:
@@ -182,6 +192,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: pgo-instrumented
+          run-id: ${{ inputs.reuse_build_from || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Unpack the instrumented browser into the objdir
         run: |

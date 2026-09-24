@@ -222,6 +222,26 @@ def ensure_corpus(src: Path, version: str) -> None:
             die(f"{rel} still missing after fetching it from hg")
 
 
+# Child processes write their profile at exit, through the parent's sandbox
+# broker. camoufox.cfg sets toolkit.shutdown.fastShutdownStage 3, which exits
+# right after xpcom-will-shutdown: in the first run two children lost every
+# write ("LLVM Profile Error: Failed to write file ... Broken pipe", 43 lines).
+# Stock builds instrumented binaries with stage 0 for exactly this reason
+# (StaticPrefList.yaml: MOZ_PROFILE_GENERATE -> 0); a user pref in the
+# training profile beats the defaultPref.
+FLUSH_PREFS = {"toolkit.shutdown.fastShutdownStage": 0}
+
+
+def allow_profile_flush(src: Path) -> None:
+    user_js = src / "testing" / "profiles" / "profileserver" / "user.js"
+    text = user_js.read_text(encoding="utf-8")
+    for pref, value in FLUSH_PREFS.items():
+        line = f'user_pref("{pref}", {json.dumps(value)});'
+        if line not in text:
+            text += f"\n// ci/pgo.py: let child processes flush their profiles.\n{line}\n"
+    user_js.write_text(text, encoding="utf-8")
+
+
 def camou_config_env(binary: Path) -> Dict[str, str]:
     """A representative identity, so training runs the spoofing paths a real
     session runs (MaskConfig reads, per-context lookups) rather than only the
@@ -246,6 +266,7 @@ def cmd_generate(args) -> int:
         die("profileserver.py launches a real browser: run under xvfb-run")
 
     ensure_corpus(src, version)
+    allow_profile_flush(src)
     # The launcher resolves properties.json next to the binary.
     for name in ("properties.json",):
         if not (dist_bin / name).exists():
@@ -261,10 +282,21 @@ def cmd_generate(args) -> int:
     work = src
     for stale in work.glob("*.profraw"):
         stale.unlink()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
     res = run(["./mach", "python", "build/pgo/profileserver.py", "--binary", str(binary)],
-              cwd=work, env=env, tee=True, capture=False, timeout=args.timeout)
+              cwd=work, env=env, timeout=args.timeout)
+    log_text = res.combined()
+    (out / "profile-run.log").write_text(log_text, encoding="utf-8")
+    print(log_text[-6000:], flush=True)
     if res.code != 0:
-        die(f"profileserver.py exited {res.code}")
+        die(f"profileserver.py exited {res.code} (full log: {out / 'profile-run.log'})")
+    # Stock's own rule (profileserver.py in automation): a process that failed
+    # to write its profile leaves that process's code unprofiled, so the run
+    # does not count.
+    errors = [l for l in log_text.splitlines() if "LLVM Profile Error" in l]
+    if errors:
+        die(f"{len(errors)} LLVM Profile Error lines, e.g. {errors[0].strip()}")
 
     profdata = work / PROFDATA
     if not profdata.is_file() or profdata.stat().st_size == 0:
@@ -272,8 +304,6 @@ def cmd_generate(args) -> int:
     raw = list(work.glob("*.profraw"))
     log(f"{len(raw)} profraw files merged into {PROFDATA} ({profdata.stat().st_size >> 20} MB)")
 
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
     asset = out / config()["profile"]["asset"]
     members = [PROFDATA] + ([JARLOG] if (work / JARLOG).is_file() else [])
     with tarfile.open(asset, "w:xz") as tar:
