@@ -9,8 +9,17 @@ const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys
 const {NetworkObserver, PageNetwork} = ChromeUtils.importESModule('chrome://juggler/content/NetworkObserver.js');
 const {PageTarget} = ChromeUtils.importESModule('chrome://juggler/content/TargetRegistry.js');
 const {setTimeout} = ChromeUtils.importESModule('resource://gre/modules/Timer.sys.mjs');
-const {MouseDispatch} = ChromeUtils.importESModule('chrome://juggler/content/input/MouseDispatch.js');
+const {MouseDispatch, kAckDeadlineMs} = ChromeUtils.importESModule('chrome://juggler/content/input/MouseDispatch.js');
 const {humanizedSteps} = ChromeUtils.importESModule('chrome://juggler/content/input/CursorTrajectory.js');
+
+// Camoufox: where a cursor coming down from the toolbar first touches the page:
+// one pixel inside the top edge (a point ON the edge is outside the viewport),
+// horizontally within a quarter viewport of the destination.
+function entryPoint(box, toX) {
+  const spread = box.width / 4;
+  const x = toX + (Math.random() * 2 - 1) * spread;
+  return { x: Math.min(Math.max(x, 1), box.width - 2), y: 1 };
+}
 
 const Cc = Components.classes;
 const Ci = Components.interfaces;
@@ -84,8 +93,15 @@ export class PageHandler {
     this._isDragging = false;
     this._lastMousePosition = { x: 0, y: 0 };
     // Camoufox: last position an actual mousemove landed on. Used as the
-    // start point for the humanized cursor trajectory (humanize=True).
+    // start point for the humanized cursor trajectory (humanize=True). Until
+    // the first move it is only a placeholder: see _cursorEntered.
     this._lastTrackedPos = { x: 0, y: 0 };
+    // Camoufox: whether the cursor has been anywhere on this page yet. The
+    // first humanized move used to leave from (0, 0), so every page's first
+    // trajectory swept out of the same corner (#751). A real cursor arrives from
+    // the browser chrome above the content, so the first path starts just
+    // inside the top edge, somewhere above its destination.
+    this._cursorEntered = false;
 
     this._reportedFrameIds = new Set();
     this._networkEventsForUnreportedFrameIds = new Map();
@@ -533,7 +549,7 @@ export class PageHandler {
       this._pageTarget._linkedBrowser.scrollRectIntoViewIfNeeded(x, y, 0, 0);
       // 2. Make sure compositor is flushed after scrolling.
       if (win.windowUtils.flushApzRepaints())
-        await helper.awaitTopic('apz-repaints-flushed');
+        await helper.awaitTopicWithin('apz-repaints-flushed', kAckDeadlineMs);
       // 3. Get element's bounding box in the browser after the scroll is completed.
       //    MouseDispatch owns every conversion from these relative coordinates to
       //    absolute ones, and every wait for a renderer ack.
@@ -556,8 +572,10 @@ export class PageHandler {
         if (eventType === 'mousemove' && ChromeUtils.camouGetBool('humanize', false)) {
           // The endpoints are excluded: the cursor is already on the first, and
           // the last is the destination dispatched explicitly below.
-          const {steps, trailingDelayMs} =
-              humanizedSteps(this._lastTrackedPos.x, this._lastTrackedPos.y, x, y);
+          let from = this._lastTrackedPos;
+          if (!this._cursorEntered)
+            from = entryPoint(dispatch.boundingBox, x);
+          const {steps, trailingDelayMs} = humanizedSteps(from.x, from.y, x, y);
           await dispatch.sendTrajectoryAcked(watcher, 'mousemove', steps, trailingDelayMs);
           // Always finish exactly on the requested destination.
           promises.push(dispatch.sendAcked(watcher, 'mousemove', x, y));
@@ -636,6 +654,7 @@ export class PageHandler {
         // Camoufox: remember where the cursor landed so the next humanized
         // move starts its trajectory from the real previous position.
         this._lastTrackedPos = { x, y };
+        this._cursorEntered = true;
 
         // The order of events after 'mousemove' is sent:
         // 1. [dragstart] - might or might NOT be emitted
@@ -643,8 +662,10 @@ export class PageHandler {
         // 3. [juggler-drag-finalized] - only emitted if dragstart was emitted.
 
         if (watcher.hasEvent('dragstart')) {
-          const eventObject = await watcher.ensureEvent('juggler-drag-finalized');
-          this._isDragging = eventObject.dragSessionStarted;
+          // Bounded like every other input wait: no finalization means no drag
+          // session, rather than a wedged input chain (lang315/camoufox PR 29).
+          const eventObject = await watcher.ensureEventWithin('juggler-drag-finalized', kAckDeadlineMs);
+          this._isDragging = !!eventObject && eventObject.dragSessionStarted;
         }
         watcher.dispose();
         return;
@@ -712,7 +733,7 @@ export class PageHandler {
       const win = this._pageTarget._window;
       // 3. Make sure compositor is flushed after scrolling.
       if (win.windowUtils.flushApzRepaints())
-        await helper.awaitTopic('apz-repaints-flushed');
+        await helper.awaitTopicWithin('apz-repaints-flushed', kAckDeadlineMs);
       for (let i = 0; i < notchCount; i++) {
         if (i)
           await new Promise(resolve => setTimeout(resolve, 18 + Math.random() * 42));
