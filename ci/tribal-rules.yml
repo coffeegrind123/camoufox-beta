@@ -180,7 +180,22 @@ rules:
       output is deliberately tied to the device preset rather than to
       canvas:seed, in which case the seed is not doing what its name suggests.
       Not gated, because failing one run in three helps nobody, and not dropped,
-      because it is real.
+      because it is real. (Audio has since stopped being noised by default; see
+      web-audio-matches-stock. The 24/24 comparison stands as measured.)
+
+  - id: web-audio-matches-stock
+    title: Web Audio is not noised by default; every context renders the stock value
+    check: manual   # enforced by _MUST_MATCH in ci/run_build_tester.py
+    evidence:
+      - "commit 88d0a80: audio:seed defaults to 0"
+      - "docs/HOST-PARITY.md: stock Firefox 152.0.4 renders the OfflineAudioContext probe to 75.83002272993326 on Windows and Linux"
+    rationale: >-
+      A per-context audio seed made each identity's audio fingerprint unique,
+      and no real Firefox has a unique one: the standard probe renders to the
+      same sum on every machine measured. Two contexts sharing that value are
+      indistinguishable from any two stock browsers, so sharing is correct and
+      variation between contexts is the regression. A preset that sets its own
+      audio:seed still gets noise.
 
   - id: canvas-fingerprint-is-hashed-not-truncated
     title: The canvas check hashes pixels, not a prefix of the data URL

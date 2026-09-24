@@ -31,7 +31,7 @@ CONFIG_PATH = CI_DIR / "build-tester.yml"
 #
 # Values Camoufox derives per context. Two contexts sharing one is the leak
 # this whole suite exists to catch, so a single collision here is fatal.
-_MUST_VARY = ("uniqueAudio", "uniqueTimezones")
+_MUST_VARY = ("uniqueTimezones",)
 
 # Canvas belongs in _MUST_VARY and is not there yet, because it does not
 # currently hold. Measured across 24 profiles in 3 runs against
@@ -62,7 +62,12 @@ _MAY_COLLIDE = ("uniqueFonts", "uniqueScreens", "uniqueVoices", "uniqueWebGL")
 # every Linux one reports Linux x86_64, because that is what those systems
 # report. Here a collision is the correct outcome and *variation* would be the
 # bug, so it is asserted in the opposite direction.
-_MUST_MATCH = ("uniquePlatforms",)
+#
+# Audio joined this list when Web Audio noise went off by default: stock
+# Firefox 152.0.4 renders the standard probe to 75.83002272993326 on Windows
+# (RTX 4090) and on Linux alike, so a per-context value made every identity
+# unique among real Firefoxes. The 24/24 audio figure above predates that.
+_MUST_MATCH = ("uniquePlatforms", "uniqueAudio")
 
 
 # A renderer string that names a software rasteriser. The page-side
@@ -312,9 +317,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             status = evidence.FAIL
 
     if slots["not_constant"]:
-        result.note("OS-constant value varied between contexts: " + ", ".join(slots["not_constant"]))
+        result.note("Stock-constant value varied between contexts: " + ", ".join(slots["not_constant"]))
         violations.append(
-            "a value that is a property of the operating system differed between contexts of "
+            "a value stock Firefox reports identically differed between contexts of "
             "the same OS: " + ", ".join(slots["not_constant"])
         )
         status = evidence.FAIL

@@ -594,7 +594,7 @@ def test_a_deployment_without_score_mode_is_flagged_not_silent():
 
 
 def _cross(**kw):
-    base = {"total": 3, "uniqueAudio": 3, "uniqueCanvas": 3, "uniqueFonts": 3,
+    base = {"total": 3, "uniqueAudio": 1, "uniqueCanvas": 3, "uniqueFonts": 3,
             "uniqueTimezones": 3, "uniqueScreens": 3, "uniqueVoices": 3,
             "uniqueWebGL": 3, "uniquePlatforms": 1}
     base.update(kw)
@@ -602,16 +602,35 @@ def _cross(**kw):
 
 
 def test_a_shared_per_context_value_is_a_leak():
-    """audio, canvas and timezone are derived per context.
+    """Timezone is derived per context.
 
     Two contexts sharing one is the failure this whole suite exists to catch.
     """
     from ci.run_build_tester import uniqueness
 
-    for slot in ("uniqueAudio", "uniqueTimezones"):
-        out = uniqueness(_cross(**{slot: 1}))
-        assert out["leaks"] == [f"macPerContext.{slot} (1/3 distinct)"], slot
-        assert not out["noise"]
+    out = uniqueness(_cross(uniqueTimezones=1))
+    assert out["leaks"] == ["macPerContext.uniqueTimezones (1/3 distinct)"]
+    assert not out["noise"]
+
+
+def test_identical_audio_is_stock_not_a_leak():
+    """Stock Firefox 152 renders the audio probe to one value on every machine.
+
+    Web Audio noise is off by default, so every context reports that value.
+    Sharing it links nobody -- every stock Firefox shares it.
+    """
+    from ci.run_build_tester import uniqueness
+
+    out = uniqueness(_cross(uniqueAudio=1))
+    assert not out["leaks"] and not out["not_constant"] and not out["noise"]
+
+
+def test_audio_that_varies_between_contexts_is_the_bug():
+    """Noise back on by default would make each identity unique again."""
+    from ci.run_build_tester import uniqueness
+
+    out = uniqueness(_cross(uniqueAudio=3))
+    assert out["not_constant"] == ["macPerContext.uniqueAudio (3/3 distinct)"]
 
 
 def test_canvas_collisions_are_tracked_but_do_not_gate():
