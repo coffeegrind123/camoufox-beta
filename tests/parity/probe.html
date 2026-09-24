@@ -1,0 +1,344 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>probe</title>
+<style>
+  #target { position: fixed; left: 200px; top: 200px; width: 200px; height: 120px; background: #4a7; }
+  #anim { width: 10px; height: 10px; background: red; transition: width 2s linear; }
+  #kf { width: 10px; height: 10px; animation: grow 2s linear forwards; }
+  @keyframes grow { from { width: 10px; } to { width: 210px; } }
+</style>
+</head><body>
+<div id="target">click</div>
+<div id="anim"></div>
+<div id="kf"></div>
+<script>
+// Everything here runs in the PAGE's main world. Harness-side evaluate() runs in an
+// isolated world and cannot see main-world leaks, so nothing is measured from there.
+const tag = new URLSearchParams(location.search).get('tag') || 'untagged';
+const R = { tag, t0: performance.now(), errors: {} };
+const safe = (k, f) => { try { return f(); } catch (e) { R.errors[k] = String(e); return null; } };
+
+R.activationAtLoad = safe('act0', () => navigator.userActivation &&
+  { hasBeenActive: navigator.userActivation.hasBeenActive, isActive: navigator.userActivation.isActive });
+
+// ---- API surface ------------------------------------------------------------------
+function surface() {
+  const out = new Set();
+  const names = Object.getOwnPropertyNames(self);
+  for (const n of names) {
+    out.add('global:' + n);
+    let v;
+    try { v = self[n]; } catch (e) { continue; }
+    if (typeof v === 'function' && /^[A-Z]/.test(n)) {
+      for (const s of Object.getOwnPropertyNames(v)) out.add('static:' + n + '.' + s);
+      if (v.prototype) for (const p of Object.getOwnPropertyNames(v.prototype)) out.add('proto:' + n + '.' + p);
+    }
+  }
+  for (const p of Object.getOwnPropertyNames(Object.getPrototypeOf(navigator))) out.add('navproto:' + p);
+  const cs = getComputedStyle(document.documentElement);
+  for (let i = 0; i < cs.length; i++) out.add('css:' + cs[i]);
+  for (const k in document.body.style) out.add('style:' + k);
+  const c = document.createElement('canvas');
+  out.add('ctx:webgl=' + !!c.getContext('webgl'));
+  out.add('ctx:webgl2=' + !!document.createElement('canvas').getContext('webgl2'));
+  out.add('ctx:webgpu=' + !!navigator.gpu);
+  return [...out].sort();
+}
+R.surface = safe('surface', surface);
+
+// ---- Codecs --------------------------------------------------------------------------
+const TYPES = [
+  'video/mp4', 'video/mp4; codecs="avc1.42E01E"', 'video/mp4; codecs="avc1.4D401E"', 'video/mp4; codecs="avc1.64001F"',
+  'video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="hev1.1.6.L93.B0"',
+  'video/mp4; codecs="hvc1.1.6.L93.B0"', 'video/mp4; codecs="av01.0.05M.08"', 'video/mp4; codecs="vp09.00.10.08"',
+  'video/mp4; codecs="mp4a.40.2"', 'video/mp4; codecs="flac"', 'video/mp4; codecs="opus"', 'video/mp4; codecs="bogus"',
+  'audio/mp4', 'audio/mp4; codecs="mp4a.40.2"', 'audio/mp4; codecs="mp4a.40.5"', 'audio/mp4; codecs="mp4a.40.29"',
+  'audio/mp4; codecs="ac-3"', 'audio/mp4; codecs="ec-3"', 'audio/mp4; codecs="opus"', 'audio/mp4; codecs="flac"',
+  'audio/aac', 'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/ogg; codecs="vorbis"', 'audio/ogg; codecs="opus"',
+  'audio/ogg; codecs="flac"', 'audio/wav', 'audio/wav; codecs="1"', 'audio/flac', 'audio/x-m4a', 'audio/webm',
+  'audio/webm; codecs="opus"', 'audio/webm; codecs="vorbis"', 'video/webm', 'video/webm; codecs="vp8"',
+  'video/webm; codecs="vp8, vorbis"', 'video/webm; codecs="vp9"', 'video/webm; codecs="vp09.00.10.08"',
+  'video/webm; codecs="av01.0.05M.08"', 'video/webm; codecs="opus"', 'video/ogg', 'video/ogg; codecs="theora"',
+  'video/ogg; codecs="theora, vorbis"', 'video/x-matroska', 'video/x-matroska; codecs="avc1.42E01E"',
+  'video/quicktime', 'video/3gpp', 'video/mp2t', 'application/x-mpegURL', 'application/vnd.apple.mpegurl',
+  'audio/x-wav', 'audio/3gpp', 'video/x-msvideo', 'video/avi', 'image/avif', 'image/webp', 'image/jxl',
+];
+R.codecs = safe('codecs', () => {
+  const v = document.createElement('video'), a = document.createElement('audio');
+  const o = {};
+  for (const t of TYPES) {
+    o[t] = {
+      video: v.canPlayType(t), audio: a.canPlayType(t),
+      mse: self.MediaSource ? MediaSource.isTypeSupported(t) : null,
+    };
+  }
+  return o;
+});
+
+async function mediaCaps() {
+  if (!navigator.mediaCapabilities) return null;
+  const cfgs = {
+    h264_1080: { type: 'media-source', video: { contentType: 'video/mp4; codecs="avc1.640028"', width: 1920, height: 1080, bitrate: 5e6, framerate: 30 } },
+    hevc_1080: { type: 'media-source', video: { contentType: 'video/mp4; codecs="hev1.1.6.L93.B0"', width: 1920, height: 1080, bitrate: 5e6, framerate: 30 } },
+    vp9_1080: { type: 'media-source', video: { contentType: 'video/webm; codecs="vp09.00.10.08"', width: 1920, height: 1080, bitrate: 5e6, framerate: 30 } },
+    av1_1080: { type: 'media-source', video: { contentType: 'video/mp4; codecs="av01.0.08M.08"', width: 1920, height: 1080, bitrate: 5e6, framerate: 30 } },
+    vp9_4k: { type: 'media-source', video: { contentType: 'video/webm; codecs="vp09.00.51.08"', width: 3840, height: 2160, bitrate: 2e7, framerate: 60 } },
+    aac: { type: 'media-source', audio: { contentType: 'audio/mp4; codecs="mp4a.40.2"', channels: 2, bitrate: 128000, samplerate: 44100 } },
+    opus: { type: 'media-source', audio: { contentType: 'audio/webm; codecs="opus"', channels: 2, bitrate: 128000, samplerate: 48000 } },
+  };
+  const o = {};
+  for (const [k, c] of Object.entries(cfgs)) {
+    try { const r = await navigator.mediaCapabilities.decodingInfo(c); o[k] = { s: r.supported, sm: r.smooth, pe: r.powerEfficient }; }
+    catch (e) { o[k] = 'ERR ' + e.name; }
+  }
+  return o;
+}
+
+// ---- Debuggee side effects -------------------------------------------------------------
+async function asyncStack() {
+  async function inner() { await null; return new Error('x').stack; }
+  async function outer() { return await inner(); }
+  return await outer();
+}
+function throwStack() {
+  // A thrown non-Error only carries a captured stack in a debuggee realm.
+  try { (function thrower() { throw { plain: 1 }; })(); } catch (e) { return Object.keys(e).join(','); }
+}
+
+// ---- wasm vs JS ratio (Juggler's debugger used to pin wasm to baseline) ----------------
+function wasmRatio() {
+  // (func $loop (param i32) (result i32) ... sum 0..n) built by hand
+  const bytes = new Uint8Array([0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,7,8,1,4,108,111,111,112,0,0,
+    10,33,1,31,1,2,127,3,64,32,2,32,1,106,32,1,108,33,2,32,1,65,1,106,34,1,32,0,72,13,0,11,32,2,11]);
+  let wasmFn;
+  try { wasmFn = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports.loop; }
+  catch (e) { return 'module error: ' + e; }
+  function jsFn(n) { let s = 0; for (let i = 0; i < n; i = (i + 1) | 0) s = Math.imul(s + i, i); return s; }
+  const N = 2e6;
+  for (let i = 0; i < 30; i++) { wasmFn(N / 10); jsFn(N / 10); }
+  let t = performance.now(); for (let i = 0; i < 20; i++) wasmFn(N); const tw = performance.now() - t;
+  t = performance.now(); for (let i = 0; i < 20; i++) jsFn(N); const tj = performance.now() - t;
+  return { wasm_ms: +tw.toFixed(1), js_ms: +tj.toFixed(1), ratio: +(tw / tj).toFixed(3) };
+}
+
+// ---- Animations (no-css-animations patch makes them instant) -------------------------
+function animProbe() {
+  return new Promise(res => {
+    const el = document.getElementById('anim');
+    el.getBoundingClientRect();
+    el.style.width = '210px';
+    setTimeout(() => {
+      res({
+        transitionMid: getComputedStyle(el).width,
+        keyframeMid: getComputedStyle(document.getElementById('kf')).width,
+        animations: document.getAnimations().length,
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      });
+    }, 500);
+  });
+}
+
+// ---- Geolocation ------------------------------------------------------------------
+async function geo() {
+  const o = {};
+  try { o.permission = (await navigator.permissions.query({ name: 'geolocation' })).state; } catch (e) { o.permission = 'ERR ' + e; }
+  o.position = await new Promise(res => {
+    const timer = setTimeout(() => res('timeout'), 6000);
+    try {
+      navigator.geolocation.getCurrentPosition(
+        p => { clearTimeout(timer); res({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }); },
+        e => { clearTimeout(timer); res('error ' + e.code + ' ' + e.message); },
+        { timeout: 5000 });
+    } catch (e) { clearTimeout(timer); res('throw ' + e); }
+  });
+  return o;
+}
+
+// ---- Pointer events from the harness's click -------------------------------------
+R.pointer = [];
+for (const type of ['pointermove', 'pointerdown', 'pointerup', 'click', 'mousedown']) {
+  document.getElementById('target').addEventListener(type, e => {
+    if (R.pointer.filter(p => p.type === type).length >= 2) return;
+    R.pointer.push({ type, pointerType: e.pointerType, isTrusted: e.isTrusted, pointerId: e.pointerId,
+      width: e.width, height: e.height, pressure: e.pressure, detail: e.detail, buttons: e.buttons,
+      mozInputSource: e.mozInputSource, screenX: e.screenX, clientX: e.clientX });
+  });
+}
+
+// ---- Misc identity values (differ by claimed OS; recorded, not diffed) -------------
+function misc() {
+  const n = navigator;
+  return {
+    ua: n.userAgent, platform: n.platform, oscpu: n.oscpu, appVersion: n.appVersion, buildID: n.buildID,
+    webdriver: n.webdriver, hc: n.hardwareConcurrency, langs: n.languages, lang: n.language,
+    maxTouch: n.maxTouchPoints, pdf: n.pdfViewerEnabled, cookie: n.cookieEnabled,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tzo: new Date().getTimezoneOffset(),
+    screen: [screen.width, screen.height, screen.availWidth, screen.availHeight, screen.colorDepth],
+    win: [innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio],
+    res: ['1dppx', '1.25dppx', '1.5dppx', '2dppx'].filter(r => matchMedia(`(resolution: ${r})`).matches),
+    visual: self.visualViewport ? [visualViewport.width, visualViewport.height, visualViewport.scale] : null,
+    screenPos: [screenX, screenY, screen.left, screen.top],
+    voices: self.speechSynthesis ? speechSynthesis.getVoices().length : null,
+    visibility: document.visibilityState, hasFocus: document.hasFocus(),
+    errStack: new Error('e').stack.split('\n').length,
+    fnToString: Function.prototype.toString.call(navigator.__lookupGetter__ ? Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get : null),
+  };
+}
+
+
+// ---- Value-level fingerprint (OS-dependent values; compared against real Windows) ----
+async function fp() {
+  const o = {};
+  const FONTS = ['Arial','Arial Black','Calibri','Cambria','Cambria Math','Candara','Comic Sans MS','Consolas','Constantia',
+    'Corbel','Courier New','Ebrima','Franklin Gothic Medium','Gabriola','Gadugi','Georgia','Impact','Javanese Text',
+    'Leelawadee UI','Lucida Console','Lucida Sans Unicode','Malgun Gothic','Marlett','Microsoft Himalaya','Microsoft JhengHei',
+    'Microsoft New Tai Lue','Microsoft PhagsPa','Microsoft Sans Serif','Microsoft Tai Le','Microsoft YaHei','Microsoft Yi Baiti',
+    'MingLiU-ExtB','Mongolian Baiti','MS Gothic','MV Boli','Myanmar Text','Nirmala UI','Palatino Linotype','Segoe MDL2 Assets',
+    'Segoe Print','Segoe Script','Segoe UI','Segoe UI Emoji','Segoe UI Historic','Segoe UI Symbol','Segoe UI Variable','SimSun',
+    'Sitka Small','Sylfaen','Symbol','Tahoma','Times New Roman','Trebuchet MS','Verdana','Webdings','Wingdings','Yu Gothic',
+    'DejaVu Sans','DejaVu Serif','Liberation Sans','Liberation Serif','Noto Sans','Noto Color Emoji','Ubuntu','Cantarell',
+    'Helvetica','Helvetica Neue','Menlo','Monaco','San Francisco','SF Pro','Apple Color Emoji','Roboto','Open Sans'];
+  const c = document.createElement('canvas').getContext('2d');
+  const base = {};
+  for (const g of ['monospace', 'sans-serif', 'serif']) { c.font = `72px ${g}`; base[g] = c.measureText('mmmmmmmmmmlli10OQ@#').width; }
+  o.defaultWidths = base;
+  o.textHeights = ['monospace', 'sans-serif', 'serif'].map(g => { const sp = document.createElement('span'); sp.style.font = `16px ${g}`; sp.textContent = 'Hxg'; document.body.appendChild(sp); const r = sp.getBoundingClientRect(); sp.remove(); return [r.width, r.height]; });
+  o.fontMetrics = {};
+  for (const f of ['serif', 'sans-serif', 'monospace', 'Arial', 'Times New Roman', 'Courier New', 'Verdana', 'Tahoma', 'Segoe UI',
+      'Calibri', 'Cambria', 'Georgia', 'Consolas', 'Trebuchet MS', 'Comic Sans MS', 'Impact', 'Lucida Console', 'Palatino Linotype',
+      'Segoe UI Emoji', 'Microsoft Sans Serif', 'Arial Black', 'Franklin Gothic Medium', 'Candara', 'Corbel', 'Constantia', 'MS Gothic']) {
+    const row = [];
+    for (const px of [12, 13.333, 16, 23]) {
+      const d = document.createElement('div'); d.style.cssText = `font: ${px}px "${f}"; position:absolute; white-space:nowrap`;
+      if (['serif', 'sans-serif', 'monospace'].includes(f)) d.style.fontFamily = f;
+      const sp = document.createElement('span'); sp.textContent = 'Hxgé'; d.appendChild(sp); document.body.appendChild(d);
+      const r = sp.getBoundingClientRect(); row.push([+r.height.toFixed(3), +d.getBoundingClientRect().height.toFixed(3)]); d.remove();
+    }
+    o.fontMetrics[f] = row;
+  }
+  o.defaultFont = [getComputedStyle(document.body).fontFamily, getComputedStyle(document.body).fontSize];
+  o.fonts = FONTS.filter(f => ['monospace', 'sans-serif', 'serif'].some(g => {
+    c.font = `72px "${f}", ${g}`; return c.measureText('mmmmmmmmmmlli10OQ@#').width !== base[g]; }));
+  o.fontsCheck = FONTS.filter(f => document.fonts.check(`12px "${f}"`));
+  const probeEl = document.createElement('div'); document.body.appendChild(probeEl);
+  const sys = {};
+  for (const f of ['caption', 'icon', 'menu', 'message-box', 'small-caption', 'status-bar', '-moz-button', '-moz-field', '-moz-list', '-moz-pull-down-menu']) {
+    probeEl.style.font = f; const cs = getComputedStyle(probeEl); sys[f] = cs.fontFamily + ' ' + cs.fontSize + ' ' + cs.fontWeight;
+  }
+  probeEl.style.font = ''; o.systemFonts = sys;
+  const colors = {};
+  for (const col of ['Canvas', 'CanvasText', 'LinkText', 'VisitedText', 'ActiveText', 'ButtonFace', 'ButtonText', 'ButtonBorder',
+      'Field', 'FieldText', 'Highlight', 'HighlightText', 'SelectedItem', 'SelectedItemText', 'Mark', 'MarkText', 'GrayText',
+      'AccentColor', 'AccentColorText', 'ActiveBorder', 'ActiveCaption', 'AppWorkspace', 'Background', 'ButtonHighlight',
+      'ButtonShadow', 'CaptionText', 'InactiveBorder', 'InactiveCaption', 'InactiveCaptionText', 'InfoBackground', 'InfoText',
+      'Menu', 'MenuText', 'Scrollbar', 'ThreeDDarkShadow', 'ThreeDFace', 'ThreeDHighlight', 'ThreeDLightShadow', 'ThreeDShadow',
+      'Window', 'WindowFrame', 'WindowText', '-moz-dialog', '-moz-dialogtext', '-moz-buttonhoverface', '-moz-cellhighlight']) {
+    probeEl.style.color = 'rgb(1, 2, 3)'; probeEl.style.color = col; colors[col] = getComputedStyle(probeEl).color;
+  }
+  o.systemColors = colors;
+  const sc = document.createElement('div'); sc.style.cssText = 'width:100px;height:100px;overflow:scroll;position:absolute;top:-500px';
+  document.body.appendChild(sc); o.scrollbar = [sc.offsetWidth - sc.clientWidth, sc.offsetHeight - sc.clientHeight]; sc.remove();
+  const inp = document.createElement('input'); document.body.appendChild(inp); o.inputSize = [inp.offsetWidth, inp.offsetHeight]; { const cs = getComputedStyle(inp); o.inputStyle = [cs.fontFamily, cs.fontSize, cs.lineHeight, cs.paddingTop, cs.borderTopWidth, cs.height]; } inp.remove();
+  const btn = document.createElement('button'); btn.textContent = 'Button'; document.body.appendChild(btn); o.buttonSize = [btn.offsetWidth, btn.offsetHeight]; { const cs = getComputedStyle(btn); o.buttonStyle = [cs.fontFamily, cs.fontSize, cs.lineHeight, cs.paddingTop, cs.paddingLeft, cs.borderTopWidth]; const r = document.createRange(); r.selectNodeContents(btn); o.buttonText = [r.getBoundingClientRect().width, r.getBoundingClientRect().height]; } btn.remove();
+  const sel = document.createElement('select'); sel.innerHTML = '<option>Option one</option>'; document.body.appendChild(sel); o.selectSize = [sel.offsetWidth, sel.offsetHeight]; sel.remove();
+  const mq = {};
+  for (const q of ['(prefers-color-scheme: dark)', '(prefers-reduced-motion: reduce)', '(prefers-contrast: more)', '(forced-colors: active)',
+      '(pointer: fine)', '(pointer: coarse)', '(any-pointer: coarse)', '(hover: hover)', '(any-hover: hover)', '(inverted-colors: inverted)',
+      '(prefers-reduced-transparency: reduce)', '(dynamic-range: high)', '(color-gamut: p3)', '(color-gamut: srgb)', '(update: fast)',
+      '(scripting: enabled)', '(display-mode: browser)', '(overflow-block: scroll)', '(-moz-overlay-scrollbars)',
+      '(prefers-color-scheme: light)', '(monochrome)', '(orientation: landscape)', '(video-dynamic-range: high)'])
+    mq[q] = matchMedia(q).matches;
+  o.mediaQueries = mq;
+  o.voices = await new Promise(res => {
+    if (!self.speechSynthesis) return res(null);
+    const done = () => res(speechSynthesis.getVoices().map(v => `${v.name}|${v.lang}|${v.localService}|${v.default}`));
+    if (speechSynthesis.getVoices().length) return done();
+    speechSynthesis.onvoiceschanged = done; setTimeout(done, 3000);
+  });
+  o.mediaDevices = await navigator.mediaDevices?.enumerateDevices().then(d => d.map(x => x.kind + ':' + (x.label ? 'L' : '') + (x.deviceId ? 'I' : ''))).catch(e => 'ERR ' + e);
+  try {
+    const ac = new AudioContext(); o.audio = { sr: ac.sampleRate, base: ac.baseLatency, out: ac.outputLatency, ch: ac.destination.maxChannelCount, state: ac.state }; ac.close();
+    const oc = new OfflineAudioContext(1, 5000, 44100); const osc = oc.createOscillator(); const comp = oc.createDynamicsCompressor();
+    osc.type = 'triangle'; osc.frequency.value = 10000; osc.connect(comp); comp.connect(oc.destination); osc.start(0);
+    const buf = await oc.startRendering(); let sum = 0; const d = buf.getChannelData(0); for (let i = 4500; i < 5000; i++) sum += Math.abs(d[i]); o.audioSum = sum;
+  } catch (e) { o.audio = 'ERR ' + e; }
+  o.math = [Math.tan(-1e300), Math.sinh(1), Math.expm1(1), Math.cbrt(100), Math.log1p(10), Math.atanh(0.5), Math.pow(Math.PI, -100), Math.exp(10), Math.cosh(10), Math.acosh(1e300)];
+  o.intl = { dtf: Intl.DateTimeFormat().resolvedOptions(), nf: Intl.NumberFormat().resolvedOptions().locale, coll: new Intl.Collator().resolvedOptions().locale,
+    date: new Date(Date.UTC(2020, 0, 2, 3, 4, 5)).toString(), locStr: new Date(Date.UTC(2020, 0, 2, 3, 4, 5)).toLocaleString(), num: (1234567.891).toLocaleString() };
+  o.plugins = [navigator.plugins.length, navigator.mimeTypes.length, [...navigator.plugins].map(p => p.name)];
+  o.perfRes = (() => { let a = performance.now(), b; const s = new Set(); for (let i = 0; i < 20000; i++) { b = performance.now(); if (b !== a) { s.add(+(b - a).toFixed(4)); a = b; } } return [...s].sort((x, y) => x - y).slice(0, 5); })();
+  const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+  if (gl) {
+    const P = ['MAX_TEXTURE_SIZE', 'MAX_RENDERBUFFER_SIZE', 'MAX_VIEWPORT_DIMS', 'MAX_VERTEX_ATTRIBS', 'MAX_VERTEX_UNIFORM_VECTORS', 'MAX_FRAGMENT_UNIFORM_VECTORS',
+      'MAX_VARYING_VECTORS', 'MAX_COMBINED_TEXTURE_IMAGE_UNITS', 'MAX_TEXTURE_IMAGE_UNITS', 'MAX_VERTEX_TEXTURE_IMAGE_UNITS', 'MAX_CUBE_MAP_TEXTURE_SIZE',
+      'ALIASED_LINE_WIDTH_RANGE', 'ALIASED_POINT_SIZE_RANGE', 'MAX_3D_TEXTURE_SIZE', 'MAX_ARRAY_TEXTURE_LAYERS', 'MAX_SAMPLES', 'MAX_DRAW_BUFFERS',
+      'MAX_UNIFORM_BLOCK_SIZE', 'MAX_COMBINED_UNIFORM_BLOCKS', 'MAX_TEXTURE_LOD_BIAS', 'MAX_ELEMENTS_VERTICES', 'MAX_ELEMENTS_INDICES',
+      'MAX_VERTEX_UNIFORM_COMPONENTS', 'MAX_FRAGMENT_UNIFORM_COMPONENTS', 'MAX_VARYING_COMPONENTS', 'MAX_COLOR_ATTACHMENTS', 'MAX_SERVER_WAIT_TIMEOUT',
+      'VERSION', 'SHADING_LANGUAGE_VERSION', 'VENDOR', 'RENDERER'];
+    const g = {};
+    for (const k of P) { const v = gl.getParameter(gl[k]); g[k] = v && v.length !== undefined && typeof v !== 'string' ? [...v] : v; }
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) { g.UNMASKED_VENDOR = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL); g.UNMASKED_RENDERER = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
+    g.ext = gl.getSupportedExtensions();
+    g.prec = ['VERTEX_SHADER', 'FRAGMENT_SHADER'].map(s => ['HIGH_FLOAT', 'MEDIUM_FLOAT', 'LOW_FLOAT', 'HIGH_INT'].map(p => { const f = gl.getShaderPrecisionFormat(gl[s], gl[p]); return [f.rangeMin, f.rangeMax, f.precision].join('/'); }).join(' '));
+    g.attrs = gl.getContextAttributes();
+    o.webgl = g;
+  }
+  return o;
+}
+
+async function main() {
+  // A subresource from a non-loopback plain-HTTP origin (the container's own IP, passed
+  // by the harness): loopback counts as potentially trustworthy, so br/zstd are allowed
+  // there even in stock and only this request shows the plain-HTTP Accept-Encoding.
+  const ext = new URLSearchParams(location.search).get('ext');
+  if (ext) await fetch(`http://${ext}/blank.html?tag=${encodeURIComponent(tag)}`, { mode: 'no-cors' }).catch(() => {});
+  R.misc = safe('misc', misc);
+  R.mediaCaps = await mediaCaps().catch(e => 'ERR ' + e);
+  R.asyncStack = await asyncStack().catch(e => 'ERR ' + e);
+  R.throwStack = safe('throw', throwStack);
+  R.wasm = safe('wasm', wasmRatio);
+  R.anim = await animProbe();
+  R.geo = await geo();
+  R.webrtc = await new Promise(res => {
+    if (!self.RTCPeerConnection) return res(null);
+    const cands = [];
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      pc.createDataChannel('x');
+      pc.onicecandidate = e => { if (e.candidate) cands.push(e.candidate.candidate); else { pc.close(); res({ cands, sdpHasIp: null }); } };
+      pc.createOffer().then(o => pc.setLocalDescription(o));
+      setTimeout(() => { try { pc.close(); } catch (e) {} res({ cands, timeout: true }); }, 6000);
+    } catch (e) { res('ERR ' + e); }
+  });
+  R.fp = await fp().catch(e => 'ERR ' + e.stack);
+  R.webgpu = await (async () => {
+    if (!navigator.gpu) return null;
+    try {
+      const a = await navigator.gpu.requestAdapter();
+      if (!a) return 'null adapter';
+      const i = a.info || {};
+      return { vendor: i.vendor, arch: i.architecture, device: i.device, desc: i.description,
+        features: [...a.features].sort(), fallback: a.isFallbackAdapter,
+        limits: Object.fromEntries(Object.keys(Object.getPrototypeOf(a.limits)).map(k => [k, a.limits[k]])),
+        pref: navigator.gpu.getPreferredCanvasFormat() };
+    } catch (e) { return 'ERR ' + e; }
+  })();
+  // Give the harness time to click the target.
+  const deadline = performance.now() + (new URLSearchParams(location.search).has('noclick') ? 2000 : 10000);
+  while (performance.now() < deadline && !R.pointer.some(p => p.type === 'click')) await new Promise(r => setTimeout(r, 100));
+  R.activationAtEnd = navigator.userActivation &&
+    { hasBeenActive: navigator.userActivation.hasBeenActive, isActive: navigator.userActivation.isActive };
+  R.elapsed = performance.now() - R.t0;
+  await fetch('/result?tag=' + encodeURIComponent(tag), { method: 'POST', body: JSON.stringify(R) });
+  document.title = 'done';
+}
+// Tell the harness where #target is on screen, so real X input can hit it.
+safe('pos', () => {
+  const r = document.getElementById('target').getBoundingClientRect();
+  const x = Math.round(mozInnerScreenX + r.left + r.width / 2), y = Math.round(mozInnerScreenY + r.top + r.height / 2);
+  fetch(`/pos?tag=${encodeURIComponent(tag)}&x=${x}&y=${y}`);
+});
+// Activation must be read before anything the harness does, and without our own input.
+setTimeout(main, 1500);
+</script>
+</body></html>
