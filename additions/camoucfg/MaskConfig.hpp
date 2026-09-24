@@ -21,6 +21,7 @@ Written by daijro.
 #include <unordered_map>
 #include <cstring>
 #include <cstdint>
+#include <utility>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -168,7 +169,69 @@ inline KeyIndex IndexObject(const nlohmann::json& obj) {
   return index;
 }
 
+// WebGL parameter tables keyed by the enum itself. getParameter is answered
+// from them on every call, and formatting the enum into a decimal key and
+// hashing two strings per call still left MAX_TEXTURE_SIZE at 49 ns against
+// stock's 13 ns. An integer probe does not format or hash a string.
+class EnumIndex {
+ public:
+  EnumIndex() = default;
+
+  explicit EnumIndex(const nlohmann::json& table) {
+    size_t capacity = 16;
+    while (capacity < table.size() * 2 + 1) capacity *= 2;
+    mSlots.assign(capacity, Slot{});
+    mMask = capacity - 1;
+    for (auto it = table.begin(); it != table.end(); ++it) {
+      uint32_t pname = 0;
+      if (!ParseEnum(it.key(), pname)) continue;
+      size_t i = Hash(pname) & mMask;
+      while (mSlots[i].value) i = (i + 1) & mMask;
+      mSlots[i] = Slot{pname, &*it};
+    }
+  }
+
+  const nlohmann::json* Find(uint32_t pname) const {
+    if (mSlots.empty()) return nullptr;
+    for (size_t i = Hash(pname) & mMask; mSlots[i].value; i = (i + 1) & mMask) {
+      if (mSlots[i].pname == pname) return mSlots[i].value;
+    }
+    return nullptr;
+  }
+
+ private:
+  struct Slot {
+    uint32_t pname = 0;
+    const nlohmann::json* value = nullptr;
+  };
+
+  // Only canonical decimal keys ("3379"): the string lookup they replace
+  // matched exactly that spelling.
+  static bool ParseEnum(const std::string& key, uint32_t& out) {
+    if (key.empty() || key.size() > 10 || (key.size() > 1 && key[0] == '0')) {
+      return false;
+    }
+    uint64_t value = 0;
+    for (char c : key) {
+      if (c < '0' || c > '9') return false;
+      value = value * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (value > UINT32_MAX) return false;
+    out = static_cast<uint32_t>(value);
+    return true;
+  }
+
+  static size_t Hash(uint32_t pname) {
+    return static_cast<size_t>((static_cast<uint64_t>(pname) * 0x9E3779B97F4A7C15ULL) >> 32);
+  }
+
+  std::vector<Slot> mSlots;
+  size_t mMask = 0;
+};
+
 struct ConfigIndex {
+  EnumIndex glParams;
+  EnumIndex gl2Params;
   KeyIndex top;
   // Every object directly under the top level, by address (Find(obj, key))
   // and by name (FindNested, the WebGL getParameter path).
@@ -184,6 +247,11 @@ inline const ConfigIndex& GetIndex() {
     built.top = IndexObject(data);
     for (const auto& value : data) {
       if (value.is_object()) built.tables.emplace(&value, IndexObject(value));
+    }
+    for (auto [name, target] : {std::pair{"webGl:parameters", &built.glParams},
+                                std::pair{"webGl2:parameters", &built.gl2Params}}) {
+      const auto* table = built.top.Find(name);
+      if (table && table->is_object()) *target = EnumIndex(*table);
     }
     // unordered_map nodes do not move, so these pointers stay valid.
     built.tablesByName = FlatIndex<const KeyIndex*>(built.tables.size());
@@ -372,29 +440,11 @@ inline const nlohmann::json* FindNested(std::string_view domain,
   return table ? table->Find(key) : nullptr;
 }
 
-// A WebGL enum as the decimal string the parameter tables are keyed by,
-// formatted on the stack (std::to_string allocated on every getParameter).
-struct PnameKey {
-  explicit PnameKey(uint32_t pname) {
-    char* end = mBuf + sizeof(mBuf);
-    mStart = end;
-    do {
-      *--mStart = static_cast<char>('0' + pname % 10);
-      pname /= 10;
-    } while (pname);
-    mLen = static_cast<size_t>(end - mStart);
-  }
-  // mStart points into mBuf, so a copy would point into the original.
-  PnameKey(const PnameKey&) = delete;
-  PnameKey& operator=(const PnameKey&) = delete;
-
-  std::string_view View() const { return std::string_view(mStart, mLen); }
-
- private:
-  char mBuf[10];
-  char* mStart;
-  size_t mLen;
-};
+// The webGl[2]:parameters entry for a WebGL enum, or null.
+inline const nlohmann::json* FindGLParam(uint32_t pname, bool isWebGL2) {
+  const auto& index = GetIndex();
+  return (isWebGL2 ? index.gl2Params : index.glParams).Find(pname);
+}
 
 inline std::optional<nlohmann::json> GetNested(std::string_view domain,
                                                std::string_view keyStr) {
@@ -414,9 +464,7 @@ inline std::optional<T> GetAttribute(std::string_view attrib, bool isWebGL2) {
 inline std::optional<
     std::variant<int64_t, bool, double, std::string, std::nullptr_t>>
 GLParam(uint32_t pname, bool isWebGL2) {
-  const auto* value =
-      FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-                 PnameKey(pname).View());
+  const auto* value = FindGLParam(pname, isWebGL2);
   if (!value) return std::nullopt;
   const auto& data = *value;
   if (data.is_null()) return std::nullptr_t();
@@ -429,9 +477,7 @@ GLParam(uint32_t pname, bool isWebGL2) {
 
 template <typename T>
 inline T MParamGL(uint32_t pname, T defaultValue, bool isWebGL2) {
-  if (const auto* value =
-          FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-                     PnameKey(pname).View())) {
+  if (const auto* value = FindGLParam(pname, isWebGL2)) {
     return value->get<T>();
   }
   return defaultValue;
@@ -441,9 +487,7 @@ template <typename T>
 inline std::vector<T> MParamGLVector(uint32_t pname,
                                      std::vector<T> defaultValue,
                                      bool isWebGL2) {
-  if (const auto* value =
-          FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-                     PnameKey(pname).View())) {
+  if (const auto* value = FindGLParam(pname, isWebGL2)) {
     if (value->is_array()) {
       std::array<T, 4UL> result = value->get<std::array<T, 4UL>>();
       return std::vector<T>(result.begin(), result.end());
