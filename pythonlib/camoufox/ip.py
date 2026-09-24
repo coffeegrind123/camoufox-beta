@@ -75,6 +75,13 @@ def validate_ip(ip: str) -> None:
         raise InvalidIP(f"Invalid IP address: {ip}")
 
 
+# Probing the exit IP through a proxy adds a hop and a TLS handshake behind it; 5 s
+# is not enough for a proxy that routes the long way round, and every URL timing out
+# fails the whole launch. Direct probes keep 5 s. (liasica/camoufox 2026-08)
+DIRECT_IP_TIMEOUT = 5
+PROXIED_IP_TIMEOUT = 15
+
+
 @lru_cache(maxsize=None)
 def public_ip(proxy: Optional[str] = None) -> str:
     """
@@ -97,7 +104,7 @@ def public_ip(proxy: Optional[str] = None) -> str:
             resp = requests.get(
                 url,
                 proxies=Proxy.as_requests_proxy(proxy) if proxy else None,
-                timeout=5,
+                timeout=PROXIED_IP_TIMEOUT if proxy else DIRECT_IP_TIMEOUT,
                 verify=True,
             )
             resp.raise_for_status()

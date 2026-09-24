@@ -1676,9 +1676,12 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None, salt: Optional[i
     # Generate unique random seeds per launch (1 to 2^32-1, excluding 0 which is a no-op in C++)
     # fonts:spacing_seed stays 0 (off): glyph-advance perturbation produces text
     # widths no real machine emits (see launch_options in utils.py).
-    config['fonts:spacing_seed'] = 0
-    config['audio:seed'] = randint(1, 4_294_967_295)  # nosec
-    config['canvas:seed'] = randint(1, 4_294_967_295)  # nosec
+    # A seed the preset sets itself (0 included, which disables that noise) is
+    # kept rather than overwritten (rubenvereecken/camoufox 3c04f0a).
+    config['fonts:spacing_seed'] = preset.get('fonts:spacing_seed', 0)
+    # Web Audio noise off unless the preset sets it: see launch_options in utils.py.
+    config['audio:seed'] = preset.get('audio:seed', 0)
+    config['canvas:seed'] = preset.get('canvas:seed', randint(1, 4_294_967_295))  # nosec
 
     if preset.get('timezone'):
         config['timezone'] = preset['timezone']
@@ -1771,16 +1774,19 @@ def _build_init_script(values: Dict[str, Any]) -> str:
             f'  if (typeof w.setTimezone === "function") w.setTimezone({_json.dumps(tz)});'
         )
 
-    # WebRTC IP
-    ip = values.get('webrtcIP')
-    if ip:
-        lines.append(
-            f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ip)});'
-        )
-    else:
-        lines.append(
-            '  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4("");'
-        )
+    # WebRTC IP. An IPv6 exit address belongs in the v6 slot: written to the v4
+    # one it never masks the real v6 candidate (lang315/camoufox#287). Both
+    # setters are always called -- an empty value just spends them -- so neither
+    # is left for the page.
+    ip = values.get('webrtcIP') or ''
+    v6 = bool(ip) and ':' in ip
+    ipv4, ipv6 = ('', ip) if v6 else (ip, '')
+    lines.append(
+        f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ipv4)});'
+    )
+    lines.append(
+        f'  if (typeof w.setWebRTCIPv6 === "function") w.setWebRTCIPv6({_json.dumps(ipv6)});'
+    )
 
     # Font list (comma-separated)
     font_list = values.get('fontList')
@@ -1848,7 +1854,7 @@ def generate_context_fingerprint(
 
         # Add seeds (the generator doesn't produce these)
         config.setdefault('fonts:spacing_seed', 0)  # perturbation off; see utils.launch_options
-        config.setdefault('audio:seed', randint(1, 4_294_967_295))  # nosec
+        config.setdefault('audio:seed', 0)  # noise off; see utils.launch_options
         config.setdefault('canvas:seed', randint(1, 4_294_967_295))  # nosec
 
         # Determine target OS from platform for font/voice generation

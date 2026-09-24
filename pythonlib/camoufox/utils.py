@@ -54,6 +54,90 @@ CACHE_PREFS = {
     'browser.cache.disk.smart_size.enabled': True,
 }
 
+# System colours stock Firefox 152.0.4 reports on Windows 10/11 in the default
+# (light) theme, measured 2026-09-24. Only the ones that differ from what a Linux
+# host's GTK theme produces are listed: the rest are Gecko stand-ins, identical on
+# every OS. AccentColor is Firefox's own default (Photon blue 60), not the Windows
+# accent, unless the user opts into system accent colours.
+WINDOWS_UI_COLORS: Dict[str, str] = {
+    'ui.highlight': '#0078d7',
+    'ui.selecteditem': '#0078d7',
+    'ui.accentcolor': '#0060df',
+    'ui.-moz-dialog': '#ffffff',
+    'ui.-moz-dialogtext': '#000000',
+    'ui.-moz-cellhighlight': '#cecece',
+}
+
+# GPUAdapter.limits of stock Firefox 152.0.4 on Windows (wgpu's D3D12 backend),
+# measured 2026-09-24. The Linux host's Vulkan backend reports 14 of these
+# differently (maxBindingsPerBindGroup 1000000, minUniformBufferOffsetAlignment
+# 32, ...), and each is a value a page reads with one property access.
+WINDOWS_WEBGPU_LIMITS: Dict[str, int] = {
+    "maxTextureDimension1D": 16384,
+    "maxTextureDimension2D": 16384,
+    "maxTextureDimension3D": 2048,
+    "maxTextureArrayLayers": 2048,
+    "maxBindGroups": 8,
+    "maxBindGroupsPlusVertexBuffers": 24,
+    "maxBindingsPerBindGroup": 4294967295,
+    "maxDynamicUniformBuffersPerPipelineLayout": 8,
+    "maxDynamicStorageBuffersPerPipelineLayout": 4,
+    "maxSampledTexturesPerShaderStage": 64,
+    "maxSamplersPerShaderStage": 64,
+    "maxStorageBuffersInVertexStage": 64,
+    "maxStorageBuffersInFragmentStage": 64,
+    "maxStorageBuffersPerShaderStage": 64,
+    "maxStorageTexturesInVertexStage": 64,
+    "maxStorageTexturesInFragmentStage": 64,
+    "maxStorageTexturesPerShaderStage": 64,
+    "maxUniformBuffersPerShaderStage": 64,
+    "maxUniformBufferBindingSize": 65536,
+    "maxStorageBufferBindingSize": 1073741824,
+    "minUniformBufferOffsetAlignment": 256,
+    "minStorageBufferOffsetAlignment": 32,
+    "maxVertexBuffers": 16,
+    "maxBufferSize": 1073741824,
+    "maxVertexAttributes": 30,
+    "maxVertexBufferArrayStride": 2048,
+    "maxInterStageShaderVariables": 31,
+    "maxColorAttachments": 8,
+    "maxColorAttachmentBytesPerSample": 128,
+    "maxComputeWorkgroupStorageSize": 32768,
+    "maxComputeInvocationsPerWorkgroup": 1024,
+    "maxComputeWorkgroupSizeX": 1024,
+    "maxComputeWorkgroupSizeY": 1024,
+    "maxComputeWorkgroupSizeZ": 64,
+    "maxComputeWorkgroupsPerDimension": 65535,
+}
+
+# Video codecs a Windows desktop decodes in hardware, so that
+# mediaCapabilities.decodingInfo() reports them powerEfficient (stock 152.0.4 on
+# Windows: H.264, HEVC and VP9 true; AV1 false even on a GPU that decodes it).
+WINDOWS_HW_CODECS: List[str] = ['video/avc', 'video/hevc', 'video/vp9']
+
+# Web Audio's output device on a Windows desktop: 48 kHz stereo. A host with no
+# sound device (any container) reports 44100 Hz and maxChannelCount 0.
+WINDOWS_AUDIO: Dict[str, int] = {
+    'AudioContext:sampleRate': 48000,
+    'AudioContext:maxChannelCount': 2,
+}
+
+
+# Draws tried for one that fits the monitor at its own display scale.
+MAX_SCALE_FIT_DRAWS = 20
+
+
+def _fits_at_drawn_scale(fingerprint: Dict[str, Any], screen_cons: Any) -> bool:
+    """Whether an fpgen draw's screen, at its devicePixelRatio, fits the monitor."""
+    if not isinstance(fingerprint, dict):
+        return True
+    scale = float((fingerprint.get('window') or {}).get('devicePixelRatio') or 1)
+    scr = fingerprint.get('screen') or {}
+    for axis, cap in (('width', screen_cons.max_width), ('height', screen_cons.max_height)):
+        if cap and scr.get(axis) and scr[axis] * scale > cap:
+            return False
+    return True
+
 
 def _host_os_key() -> Optional[str]:
     """The host OS in fonts.json / target_os terms ('mac', 'win', 'lin')."""
@@ -941,15 +1025,27 @@ def launch_options(
     # `headless` and "is there a display to probe" are separate questions: passing
     # `headless or has_display(env)` made a headful run on a real display look like a
     # headless one to get_screen_cons(), which then skipped the bound entirely.
-    screen_cons = screen or (get_screen_cons(headless) if has_display(env) else None)
+    # headless="virtual" arrives here as headless=False with its own Xvfb, so the
+    # host's monitor must not bound it either (lang315/camoufox#37).
+    screen_cons = screen or (
+        get_screen_cons(headless) if has_display(env) and not virtual_display else None
+    )
 
     if not _used_preset and fingerprint is None:
-        # Default: synthetic generation via fpgen (infinite unique fingerprints)
-        fingerprint = generate_fingerprint(
-            screen=screen_cons,
-            window=window,
-            os=os,
-        )
+        # Default: synthetic generation via fpgen (infinite unique fingerprints).
+        # Headful on a real monitor, the draw must also fit it PHYSICALLY at its
+        # own display scale (see "Display scaling" below): a 1512x982 Mac at 2x
+        # needs a 3024x1964 panel. Redraw until it does; fpgen's conditions are
+        # per field and cannot express screen x scale.
+        on_monitor = headless is False and not virtual_display and screen_cons
+        for _ in range(MAX_SCALE_FIT_DRAWS):
+            fingerprint = generate_fingerprint(
+                screen=screen_cons,
+                window=window,
+                os=os,
+            )
+            if not on_monitor or _fits_at_drawn_scale(fingerprint, screen_cons):
+                break
 
     if not _used_preset and fingerprint is not None:
         # Inject the generated fingerprint into the config
@@ -959,6 +1055,29 @@ def launch_options(
         )
 
     target_os = get_target_os(config)
+
+    # Display scaling. fpgen draws a screen at a scale -- 1536x864 is a 1920x1080
+    # panel at 125% -- but the browser rendered every identity at 1, so pages
+    # read devicePixelRatio 1 and (resolution: 1dppx) next to a 125% screen, a
+    # pair no real machine reports (36% of Windows draws, 74% of macOS ones,
+    # measured over 150 each). Rendering at the drawn scale for real keeps
+    # devicePixelRatio, the resolution media queries and the CSS geometry
+    # agreeing, as they do on the real machine; spoofing the ratio alone would
+    # not (lang315/camoufox#41). Measured on a 1536x864 identity: ratio 1.25,
+    # (resolution: 1.25dppx), window 1536x731 CSS, input still lands.
+    device_scale = 1.0
+    if not _used_preset and isinstance(fingerprint, dict) and 'layout.css.devPixelsPerPx' not in firefox_user_prefs:
+        drawn = (fingerprint.get('window') or {}).get('devicePixelRatio')
+        allowed = coherence.PLAUSIBLE_DPR.get(target_os)
+        if drawn and allowed:
+            device_scale = float(min(allowed, key=lambda v: abs(float(v) - float(drawn))))
+        # A supplied identity too large for this monitor at its scale keeps the
+        # old 1x rendering rather than being clamped to a fraction of itself.
+        on_monitor = headless is False and not virtual_display and screen_cons
+        if device_scale != 1.0 and on_monitor and not _fits_at_drawn_scale(fingerprint, screen_cons):
+            device_scale = 1.0
+        if device_scale != 1.0:
+            firefox_user_prefs['layout.css.devPixelsPerPx'] = f'{device_scale:g}'
 
     # Drop values the source supplied that this identity cannot keep, before the
     # pools below defer to them (a preset's own GPU pair wins over sampling).
@@ -991,7 +1110,13 @@ def launch_options(
         # headless='virtual' reaches here as headless=False (see async_api) with
         # a 1x1 Xvfb (virtdisplay.py) that is not a real screen.
         if headless is False and not virtual_display and screen_cons:
-            clamp_screen_to_display(config, screen_cons.max_width, screen_cons.max_height)
+            # The window is drawn at the identity's scale (below), so it is the
+            # PHYSICAL size -- CSS size x scale -- that has to fit the monitor.
+            clamp_screen_to_display(
+                config,
+                screen_cons.max_width and int(screen_cons.max_width / device_scale),
+                screen_cons.max_height and int(screen_cons.max_height / device_scale),
+            )
         fix_screen_no_taskbar(config, target_os)
         clamp_window_dimensions(config)
         clamp_window_position(config)
@@ -1062,6 +1187,63 @@ def launch_options(
         firefox_user_prefs.setdefault('ui.useOverlayScrollbars', 1 if windows_11 else 0)
     else:
         firefox_user_prefs.setdefault('ui.useOverlayScrollbars', 1)
+
+    # CSS transitions and animations run in real time, as in stock Firefox.
+    # no-css-animations.patch finishes them instantly unless this is set, and a
+    # page reads that back in one line: a 2 s width transition sampled at 0.5 s
+    # is 10px (its start value) here and ~60px in stock (measured 2026-09-24).
+    # DataDome keyed on it (daijro/camoufox#450).
+    config.setdefault('disableInstantAnimations', True)
+
+    # Answers that come from the HOST rather than the claimed OS. When the two
+    # differ, each is set to what stock Firefox 152.0.4 reports on that OS
+    # (measured 2026-09-24, Windows 10, against this build on a Linux host):
+    if target_os != _host_os_key():
+        # canPlayType()/isTypeSupported() list the host's decoders: a Linux
+        # container answers "" for H.264 and HEVC, where every Windows and macOS
+        # Firefox answers "probably" (#558). The spoof matches Windows exactly
+        # on 58 MIME/codec strings.
+        if target_os in ('win', 'mac'):
+            config.setdefault('media:spoof_codecs', True)
+
+        # Glyph advances: DirectWrite and CoreText position glyphs at subpixel
+        # offsets, so text widths are fractional (sans-serif 953.0667 px on
+        # Windows); Linux with hinting rounds every advance to a whole pixel
+        # (953). Forcing subpixel positioning reproduces the Windows widths
+        # exactly, and with them the default widths of form controls (<input>
+        # 158 -> 165 px, <select> 92 -> 95 px, as on Windows).
+        if target_os in ('win', 'mac'):
+            firefox_user_prefs.setdefault('gfx.text.subpixel-position.force-enabled', True)
+
+        if target_os == 'win':
+            # Highlight, SelectedItem, AccentColor and the -moz-dialog pair come
+            # from the GTK theme (Adwaita 53,132,228 / 246,245,244) otherwise.
+            for pref, value in WINDOWS_UI_COLORS.items():
+                firefox_user_prefs.setdefault(pref, value)
+
+            # Line boxes: DirectWrite takes ascent/descent from OS/2 usWin* and
+            # keeps the em height fractional, FreeType takes pixel-rounded hhea
+            # values -- the same font file gives different heights (Arial 16px:
+            # 17/18 px on Windows, 19/19 here; all 26 fonts measured differed).
+            config.setdefault('fonts:metrics', 'windows')
+
+            # decodingInfo(): the host's decoders answer otherwise (no H.264,
+            # HEVC or AAC in a Linux container; VP9 software-only).
+            config.setdefault('media:hwCodecs', list(WINDOWS_HW_CODECS))
+
+            config.setdefault('webGpu:limits', dict(WINDOWS_WEBGPU_LIMITS))
+
+            # No sound device: 44100 Hz and 0 output channels, which no desktop
+            # with speakers reports.
+            for key, value in WINDOWS_AUDIO.items():
+                config.setdefault(key, value)
+
+            # WebGPU ships on Windows (Firefox 141+) and is off on Linux. Without
+            # it navigator.gpu and ~390 GPU* interface members are missing; the
+            # adapter's limits are brought to the D3D12 values by
+            # webgpu-limits-spoofing.patch.
+            firefox_user_prefs.setdefault('dom.webgpu.enabled', True)
+            firefox_user_prefs.setdefault('dom.webgpu.external-texture.enabled', True)
 
     # Per-character font fallback, LINUX ONLY. Gecko's GlobalFontFallback walks
     # the shared font list for a family whose charmap covers the character; in a
@@ -1149,14 +1331,20 @@ def launch_options(
     # on every measureText), which is a fingerprint no stock Firefox emits.
     # Pass fonts:spacing_seed explicitly to opt back in.
     set_into(config, 'fonts:spacing_seed', 0)
-    # audio/canvas noise seeds follow the identity: a returning "same device"
-    # must reproduce its audio and canvas hashes (#442/#765). Derived, not
-    # equal, so the two streams differ; never 0 (0 disables the noise).
-    # A preset draws its own random seeds; they are replaced here too so a
-    # pinned preset reproduces them, but a seed the caller set is kept.
-    _ident = identity_seed(config, _identity_salt)
+    # Web Audio noise is OFF by default (seed 0) for the same reason: stock
+    # Firefox 152 renders the standard OfflineAudioContext probe to exactly the
+    # same value on every machine (75.83002272993326, measured 2026-09-24 on
+    # Linux and on Windows, and this build unseeded), so any noise makes the
+    # identity one no real Firefox is. The unseeded value is also stable across
+    # sessions, which is what #442/#765 asked of a returning device. Pass
+    # audio:seed explicitly to opt back in.
     if 'audio:seed' not in _user_set_noise_seeds:
-        config['audio:seed'] = ((_ident * 2654435761 + 97) & 0xFFFFFFFF) or 1
+        config['audio:seed'] = 0
+    # The canvas noise seed follows the identity: a returning "same device"
+    # must reproduce its canvas hashes (#442/#765); never 0 (0 disables it).
+    # A preset draws its own random seed; it is replaced here too so a pinned
+    # preset reproduces it, but a seed the caller set is kept.
+    _ident = identity_seed(config, _identity_salt)
     if 'canvas:seed' not in _user_set_noise_seeds:
         config['canvas:seed'] = ((_ident * 40503 + 12345) & 0xFFFFFFFF) or 1
 

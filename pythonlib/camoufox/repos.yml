@@ -66,3 +66,4 @@ geoip:
       longitude: location.longitude
       latitude: location.latitude
       timezone: location.time_zone
+      accuracy: location.accuracy_radius

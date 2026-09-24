@@ -104,37 +104,46 @@ async def AsyncNewBrowser(
     else:
         virtual_display = None
 
-    if not from_options:
-        # Opt-in; see the note in sync_api.launch_options_or_default.
-        kwargs.setdefault('pin_cpu_cores', False)
-        from_options = await asyncio.get_event_loop().run_in_executor(
-            None,
-            partial(launch_options, headless=headless, debug=debug, **kwargs),
-        )
+    # Everything after the display exists can fail (bad proxy, missing binary,
+    # unsatisfiable constraints) before sync/async_attach_vd wires kill() into
+    # close, which used to strand one Xvfb and its /tmp/.X<n> lock per failed
+    # launch (lang315/camoufox#363).
+    try:
+        if not from_options:
+            # Opt-in; see the note in sync_api.launch_options_or_default.
+            kwargs.setdefault('pin_cpu_cores', False)
+            from_options = await asyncio.get_event_loop().run_in_executor(
+                None,
+                partial(launch_options, headless=headless, debug=debug, **kwargs),
+            )
 
-    # Playwright's default viewport deadlocks Juggler when the window is spoofed
-    # to a different size (daijro/camoufox#666), so default to no_viewport.
-    no_viewport_default = spoofs_window_dimensions(from_options)
+        # Playwright's default viewport deadlocks Juggler when the window is spoofed
+        # to a different size (daijro/camoufox#666), so default to no_viewport.
+        no_viewport_default = spoofs_window_dimensions(from_options)
 
-    # Pin the driver (and so the browser it is about to spawn) to as many
-    # cores as the identity reports, so measurable parallelism matches
-    # navigator.hardwareConcurrency; the driver gets its cores back afterwards.
-    from . import cpu_affinity
-    from .utils import driver_pid, pinned_core_count
+        # Pin the driver (and so the browser it is about to spawn) to as many
+        # cores as the identity reports, so measurable parallelism matches
+        # navigator.hardwareConcurrency; the driver gets its cores back afterwards.
+        from . import cpu_affinity
+        from .utils import driver_pid, pinned_core_count
 
-    pin_to = pinned_core_count(from_options)
-    pid = driver_pid(playwright) if pin_to else None
-    if not pid:
-        return await _launch(playwright, from_options, persistent_context, no_viewport_default, virtual_display)
-    # The browser inherits the driver's mask at spawn, so two concurrent launches
-    # on one driver must not interleave pin/restore: the second pin would land on
-    # the first browser, and the first restore would leave the driver pinned.
-    async with _pin_lock(pid):
-        previous = cpu_affinity.pin(pid, pin_to)
-        try:
+        pin_to = pinned_core_count(from_options)
+        pid = driver_pid(playwright) if pin_to else None
+        if not pid:
             return await _launch(playwright, from_options, persistent_context, no_viewport_default, virtual_display)
-        finally:
-            cpu_affinity.restore(pid, previous)
+        # The browser inherits the driver's mask at spawn, so two concurrent launches
+        # on one driver must not interleave pin/restore: the second pin would land on
+        # the first browser, and the first restore would leave the driver pinned.
+        async with _pin_lock(pid):
+            previous = cpu_affinity.pin(pid, pin_to)
+            try:
+                return await _launch(playwright, from_options, persistent_context, no_viewport_default, virtual_display)
+            finally:
+                cpu_affinity.restore(pid, previous)
+    except BaseException:
+        if virtual_display:
+            virtual_display.kill()
+        raise
 
 
 _PIN_LOCKS: Dict[int, asyncio.Lock] = {}
