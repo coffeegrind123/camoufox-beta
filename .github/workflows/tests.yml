@@ -403,9 +403,11 @@ jobs:
         # rustc the build runs is this one. ci/pgo.py has the pairing.
         run: python3 -m ci.pgo toolchain
 
+      # restore + save rather than actions/cache, whose save runs only when the
+      # whole job succeeds: a build that failed 80 minutes in kept nothing.
       - name: Restore ccache
         if: steps.prebuilt.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           # Keyed on the browser version and the patch set, so a pull request
@@ -464,7 +466,16 @@ jobs:
         run: python3 -m ci.run_build
 
       - run: ccache -s
-        if: steps.prebuilt.outputs.cache-hit != 'true'
+        if: always() && steps.prebuilt.outputs.cache-hit != 'true'
+
+      - name: Save ccache
+        if: always() && steps.prebuilt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          # Unique per attempt (a cache key cannot be overwritten); the restore
+          # step's prefix keys pick the newest.
+          key: ccache-opt-${{ needs.resolve.outputs.browser_version }}-${{ hashFiles('patches/**', 'additions/**', 'assets/*.mozconfig', 'assets/optimized-build.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Package the binary for the test jobs
         if: steps.prebuilt.outputs.cache-hit != 'true'
