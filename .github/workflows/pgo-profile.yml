@@ -29,6 +29,10 @@ jobs:
     name: Instrumented build + training run
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    env:
+      # scripts/patch.py writes the mozconfig from this and defaults to macOS
+      # arm64 without it.
+      BUILD_TARGET: linux,x86_64
     steps:
       - uses: actions/checkout@v4
 
