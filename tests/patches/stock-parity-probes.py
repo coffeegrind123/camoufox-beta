@@ -16,6 +16,8 @@ an invariant stock Firefox 152 holds:
                       asked for: one event, deltaMode 0, deltaY 300
   wheel-notches       the same scroll with humanize=True arrives as 3 events
                       with wheelDeltaY a multiple of 120, as a physical wheel
+  wheel-scaled        wheel-default again with the browser rendering at 2x:
+                      still deltaY 300, not 300 / devicePixelRatio
   query-cost          matchMedia('(color: 8)') and navigator.hardwareConcurrency
                       cost about what matchMedia('(min-width: 1px)') and
                       navigator.userAgent do (no sync IPC per read)
@@ -178,23 +180,31 @@ def run_probes(binary, port):
         return out
 
 
-def probe_wheel(binary, port, humanize):
+def probe_wheel(binary, port, humanize, scale=None):
     """One scroll of 300px, with humanize on or off.
 
     Off (the default) the caller's delta is delivered verbatim, which is what
     upstream's own suite asserts. On, the scroll is quantised into the notches a
     physical wheel produces. Both are shipped behaviour, so both are checked.
+
+    `scale` pins layout.css.devPixelsPerPx, which the launcher sets from the
+    identity's devicePixelRatio. The chrome window renders at that scale too,
+    and a pixel delta sent through it arrived divided by it (300 -> 150 at 2x),
+    so an unpinned run only caught it when the draw happened to be scaled.
+    Returns (events, devicePixelRatio).
     """
     from camoufox.sync_api import Camoufox
 
+    prefs = {"layout.css.devPixelsPerPx": str(scale)} if scale else {}
     with Camoufox(headless=True, executable_path=str(binary), humanize=humanize,
-                  i_know_what_im_doing=True) as b:
+                  firefox_user_prefs=prefs, i_know_what_im_doing=True) as b:
         page = b.new_page()
         page.goto(f"http://localhost:{port}/")
         page.mouse.move(200, 200)
         page.mouse.wheel(0, 300)
         page.wait_for_timeout(1500)
-        return json.loads(page.evaluate("() => document.body.dataset.wheel || '[]'"))
+        events = json.loads(page.evaluate("() => document.body.dataset.wheel || '[]'"))
+        return events, page.evaluate("() => devicePixelRatio")
 
 
 def relaunch_timezones(binary, port):
@@ -225,7 +235,8 @@ def main() -> int:
     server, port = serve()
     try:
         out = run_probes(binary, port)
-        out["wheelHumanized"] = probe_wheel(binary, port, humanize=True)
+        out["wheelHumanized"], _ = probe_wheel(binary, port, humanize=True)
+        out["wheelScaled"], out["wheelScaledDpr"] = probe_wheel(binary, port, humanize=False, scale=2)
         relaunch = relaunch_timezones(binary, port)
     finally:
         server.shutdown()
@@ -262,6 +273,11 @@ def main() -> int:
     if len(wheel) != 1 or wheel[0]["mode"] != 0 or wheel[0]["dy"] != 300:
         failures.append(f"wheel-default: wheel(0, 300) gave {wheel}")
     # humanize=True: notches, each carrying one native tick.
+    scaled = out["wheelScaled"]
+    if out["wheelScaledDpr"] != 2:
+        failures.append(f"wheel-scaled: devicePixelRatio {out['wheelScaledDpr']} at devPixelsPerPx 2 -- check is vacuous")
+    if len(scaled) != 1 or scaled[0]["mode"] != 0 or scaled[0]["dy"] != 300:
+        failures.append(f"wheel-scaled: wheel(0, 300) at 2x gave {scaled}")
     humanized = out["wheelHumanized"]
     if len(humanized) != 3 or any(e["wd"] % 120 for e in humanized):
         failures.append(f"wheel-notches: humanized wheel(0, 300) gave {humanized}")

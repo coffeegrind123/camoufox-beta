@@ -247,12 +247,17 @@ export class MouseDispatch {
   sendWheel(x, y, {deltaX, deltaY, deltaZ, deltaMode, lineOrPageDeltaX, lineOrPageDeltaY, nativeNotches = false}) {
     const {x: absX, y: absY} = this.toAbsolute(x, y);
     const utils = this._win.windowUtils;
+    // Pixel deltas go to the widget in device pixels, and the chrome window
+    // renders at layout.css.devPixelsPerPx like content does: at 2x,
+    // wheel(0, 300) reached the page as deltaY 150. Privileged code reads the
+    // real ratio, so scale by it to deliver the CSS delta the caller asked for.
+    const scale = deltaMode === 0 /* WheelEvent.DOM_DELTA_PIXEL */ ? this._win.devicePixelRatio : 1;
     utils.sendWheelEvent(
       absX,
       absY,
-      deltaX,
-      deltaY,
-      deltaZ,
+      deltaX * scale,
+      deltaY * scale,
+      deltaZ * scale,
       deltaMode,
       this._args.modifiers,
       lineOrPageDeltaX,
