@@ -1,5 +1,5 @@
 diff --git a/gfx/thebes/gfxPlatformGtk.cpp b/gfx/thebes/gfxPlatformGtk.cpp
-index 4cf3991..2d4f6c2 100644
+index 4cf3991..0584790 100644
 --- a/gfx/thebes/gfxPlatformGtk.cpp
 +++ b/gfx/thebes/gfxPlatformGtk.cpp
 @@ -6,6 +6,7 @@
@@ -10,7 +10,7 @@ index 4cf3991..2d4f6c2 100644
  
  #include <gtk/gtk.h>
  #include <fontconfig/fontconfig.h>
-@@ -416,9 +417,1107 @@ static const char kFontSymbola[] = "Symbola";
+@@ -416,9 +417,1117 @@ static const char kFontSymbola[] = "Symbola";
  static const char kFontNotoSansSymbols[] = "Noto Sans Symbols";
  static const char kFontNotoSansSymbols2[] = "Noto Sans Symbols2";
  
@@ -22,6 +22,12 @@ index 4cf3991..2d4f6c2 100644
 +// the Linux table does not name for a Windows allowlist rendered as .notdef.
 +// The two tables are stock's, copied verbatim from gfxWindowsPlatform.cpp and
 +// gfxPlatformMac.cpp (FIREFOX_152_0_4_RELEASE).
++namespace camou_fallback {
++
++// The tables were member functions of gfxPlatform, where Script is a class
++// typedef; free functions need it spelled out.
++using Script = mozilla::intl::Script;
++
 +static void CamouWindowsCommonFallbackFonts(uint32_t aCh, Script aRunScript,
 +                                            FontPresentation aPresentation,
 +                                            nsTArray<const char*>& aFontList) {
@@ -1082,6 +1088,8 @@ index 4cf3991..2d4f6c2 100644
 +  aFontList.AppendElement("Arial Unicode MS");
 +}
 +
++}  // namespace camou_fallback
++
 +enum class CamouFallbackOS { Host, Windows, Mac };
 +
 +// The launch identity's OS. The table has no document to key a per-context
@@ -1106,10 +1114,12 @@ index 4cf3991..2d4f6c2 100644
                                              nsTArray<const char*>& aFontList) {
 +  switch (ClaimedFallbackOS()) {
 +    case CamouFallbackOS::Windows:
-+      CamouWindowsCommonFallbackFonts(aCh, aRunScript, aPresentation, aFontList);
++      camou_fallback::CamouWindowsCommonFallbackFonts(aCh, aRunScript,
++                                                      aPresentation, aFontList);
 +      return;
 +    case CamouFallbackOS::Mac:
-+      CamouMacCommonFallbackFonts(aCh, aRunScript, aPresentation, aFontList);
++      camou_fallback::CamouMacCommonFallbackFonts(aCh, aRunScript,
++                                                  aPresentation, aFontList);
 +      return;
 +    case CamouFallbackOS::Host:
 +      break;
