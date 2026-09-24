@@ -42,13 +42,19 @@ VALUES = """async () => {
   return {window: read(), worker};
 }"""
 
+# Workers report their count at most every 100 ms. Posting per fixed batch of
+# reads flooded the page's main thread once reads got fast (~16k messages/s
+# at ~1e9 reads per 30 s), and on a 4-core runner navigation starved and
+# timed out -- the harness failing, not the browser.
 SPIN = """(n) => {
   window.__reads = 0;
-  const code = 'for(;;){ for(let i=0;i<2000;i++){ navigator.hardwareConcurrency; navigator.platform;'
-             + ' navigator.userAgent; navigator.language; } postMessage(0); }';
+  const code = 'let c = 0, last = performance.now(); for(;;){ for(let i=0;i<2000;i++){'
+             + ' navigator.hardwareConcurrency; navigator.platform; navigator.userAgent; navigator.language; }'
+             + ' c += 2000; const now = performance.now();'
+             + ' if (now - last >= 100) { postMessage(c); c = 0; last = now; } }';
   for (let i = 0; i < n; i++) {
     const w = new Worker(URL.createObjectURL(new Blob([code])));
-    w.onmessage = () => { window.__reads += 2000; };
+    w.onmessage = (e) => { window.__reads += e.data; };
   }
 }"""
 
@@ -94,6 +100,7 @@ def check_race(binary, url, failures):
 
     fps = [generate_context_fingerprint(os=o) for o in ("macos", "linux", "windows")]
     crashed = []
+    errors = []
     created = 0
     reads = 0
     with Camoufox(os="windows", headless=True, executable_path=str(binary),
@@ -115,11 +122,17 @@ def check_race(binary, url, failures):
                 created += 1
             if not crashed:
                 reads = spin.evaluate("window.__reads")
-        except Exception as exc:  # a crash mid-call surfaces as a closed target
-            crashed.append(f"{type(exc).__name__}: {str(exc).splitlines()[0]}")
-    print(f"race: {created} contexts in {RACE_SECONDS} s, {reads} worker reads, crashed: {crashed or 'no'}")
+        except Exception as exc:
+            # A crash mid-call surfaces as a closed target; anything else (a
+            # timeout) is the harness, not the race, and is reported as such.
+            first = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+            (crashed if "closed" in first.lower() or "crash" in first.lower() else errors).append(first)
+    print(f"race: {created} contexts in {RACE_SECONDS} s, {reads} worker reads, crashed: {crashed or 'no'}"
+          + (f", harness errors: {errors}" if errors else ""))
     if crashed:
         failures.append(f"race: content process crashed after {created} contexts ({crashed[0]})")
+    elif errors:
+        failures.append(f"race: harness error after {created} contexts ({errors[0]}) -- check is vacuous")
     elif created < 10 or reads == 0:
         failures.append(f"race: {created} contexts / {reads} worker reads -- check is vacuous")
 
