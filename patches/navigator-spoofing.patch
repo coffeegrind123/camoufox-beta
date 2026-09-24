@@ -240,7 +240,7 @@ new file mode 100644
 index 0000000000..918d94be04
 --- /dev/null
 +++ b/dom/base/NavigatorManager.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,95 @@
 +/* Camoufox: Per-context navigator property manager */
 +#ifndef mozilla_dom_NavigatorManager_h
 +#define mozilla_dom_NavigatorManager_h
@@ -303,10 +303,8 @@ index 0000000000..918d94be04
 +  }
 +
 +  static uint32_t GetHardwareConcurrency(uint32_t aId) {
-+    nsAutoString key;
-+    key.AppendPrintf("nav_hwc_%u", aId);
 +    uint32_t value = 0;
-+    if (RoverfoxStorageManager::GetUint(key, value)) {
++    if (RoverfoxStorageManager::GetUint("nav_hwc_", aId, value)) {
 +      return value;
 +    }
 +    return 0;

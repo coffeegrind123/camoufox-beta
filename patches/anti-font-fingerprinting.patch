@@ -44,9 +44,10 @@ index 0000000000..e07de3e753
 +
 +/* static */ uint32_t
 +FontSpacingSeedManager::GetSeed(uint32_t userContextId) {
-+  nsString key = KeyForUserContext(userContextId);
++  // Read on every text run harfbuzz shapes: the memoized form.
 +  uint32_t seed = 0;
-+  if (RoverfoxStorageManager::GetUint(key, seed) && seed != 0) {
++  if (RoverfoxStorageManager::GetUint("seed_", userContextId, seed) &&
++      seed != 0) {
 +    return seed;
 +  }
 +  // Fallback to CAMOU_CONFIG for Workers in separate processes
@@ -58,9 +59,8 @@ index 0000000000..e07de3e753
 +
 +/* static */ bool
 +FontSpacingSeedManager::HasSeed(uint32_t userContextId) {
-+  nsString key = KeyForUserContext(userContextId);
 +  uint32_t seed = 0;
-+  return RoverfoxStorageManager::GetUint(key, seed);
++  return RoverfoxStorageManager::GetUint("seed_", userContextId, seed);
 +}
 +
 +/* static */ bool
@@ -179,10 +179,13 @@ new file mode 100644
 index 0000000000..dcb359d25a
 --- /dev/null
 +++ b/dom/base/RoverfoxStorageManager.cpp
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,332 @@
 +#include "RoverfoxStorageManager.h"
 +#include "mozilla/Preferences.h"
 +#include "nsIPrefBranch.h"
++
++#include <atomic>
++#include <cstdint>
 +#include "nsXULAppAPI.h"
 +#include "mozilla/dom/ContentChild.h"
 +#include "nsThreadUtils.h"
@@ -222,6 +225,88 @@ index 0000000000..dcb359d25a
 +  return nsCString(prefName);
 +}
 +
++// Bumped after every change to what ReadValue can answer (a put, a remove, a
++// mirrored pref, a value fetched from the parent). A memo taken under an
++// older generation is read again. Starts at 1 so a zeroed slot never matches.
++static std::atomic<uint64_t> sGeneration{1};
++
++/* static */ void RoverfoxStorageManager::BumpGeneration() {
++  sGeneration.fetch_add(1, std::memory_order_release);
++}
++
++// Per-context getters are page-callable in a loop, and each read built its
++// key with AppendPrintf, converted it to UTF-8, and took the cache lock (plus
++// a pref lookup and a second lock on a miss). Measured from script against
++// stock Firefox 152.0.4: navigator.hardwareConcurrency 380-680 ns vs 45 ns,
++// screen.width 820-940 ns vs 130 ns -- a gap a page can time. A hit here is
++// one generation check.
++struct RoverfoxStorageManager::MemoSlot {
++  const char* prefix;
++  uint32_t id;
++  uint64_t generation;
++  bool present;
++  bool isUint;
++  uint32_t uintValue;
++  bool boolValue;
++};
++
++static constexpr size_t kMemoSlots = 64;
++
++/* static */ RoverfoxStorageManager::MemoSlot
++RoverfoxStorageManager::ReadMemoized(const char* aPrefix, uint32_t aId) {
++  // Zero-initialized per thread: generation 0 never matches sGeneration.
++  static thread_local MemoSlot tMemo[kMemoSlots];
++  uint64_t generation = sGeneration.load(std::memory_order_acquire);
++  size_t index = ((reinterpret_cast<uintptr_t>(aPrefix) >> 3) * 31 + aId) &
++                 (kMemoSlots - 1);
++  MemoSlot& slot = tMemo[index];
++  if (slot.prefix == aPrefix && slot.id == aId &&
++      slot.generation == generation) {
++    return slot;
++  }
++
++  nsAutoString key;
++  key.AssignASCII(aPrefix);
++  key.AppendInt(aId);
++  nsAutoCString value;
++  ReadValue(MakePrefName(key), value);
++
++  slot.prefix = aPrefix;
++  slot.id = aId;
++  // The generation read before the lookup: a write racing it leaves this
++  // slot stale by one generation, so the next read looks again.
++  slot.generation = generation;
++  slot.present = !value.IsEmpty();
++  nsresult parseRv;
++  int64_t parsed = value.ToInteger64(&parseRv);
++  slot.isUint = slot.present && NS_SUCCEEDED(parseRv) && parsed >= 0;
++  slot.uintValue = slot.isUint ? static_cast<uint32_t>(parsed) : 0;
++  slot.boolValue = value.EqualsLiteral("1");
++  return slot;
++}
++
++/* static */ bool RoverfoxStorageManager::GetUint(const char* aPrefix,
++                                                  uint32_t aId,
++                                                  uint32_t& outValue) {
++  MemoSlot slot = ReadMemoized(aPrefix, aId);
++  if (!slot.isUint) {
++    return false;
++  }
++  outValue = slot.uintValue;
++  return true;
++}
++
++/* static */ bool RoverfoxStorageManager::GetBool(const char* aPrefix,
++                                                  uint32_t aId,
++                                                  bool& outValue) {
++  MemoSlot slot = ReadMemoized(aPrefix, aId);
++  if (!slot.present) {
++    return false;
++  }
++  outValue = slot.boolValue;
++  return true;
++}
++
 +static void OnStoragePrefChanged(const char* aPrefName, void*) {
 +  RoverfoxStorageManager::MirrorPref(nsDependentCString(aPrefName));
 +}
@@ -230,13 +315,16 @@ index 0000000000..dcb359d25a
 +  MOZ_ASSERT(NS_IsMainThread());
 +  nsAutoCString value;
 +  Preferences::GetCString(PromiseFlatCString(aPrefName).get(), value, kKind);
-+  MutexAutoLock lock(GetLocalCacheMutex());
-+  GetMissCache().Remove(aPrefName);
-+  if (value.IsEmpty()) {
-+    GetLocalCache().Remove(aPrefName);
-+  } else {
-+    GetLocalCache().InsertOrUpdate(aPrefName, value);
++  {
++    MutexAutoLock lock(GetLocalCacheMutex());
++    GetMissCache().Remove(aPrefName);
++    if (value.IsEmpty()) {
++      GetLocalCache().Remove(aPrefName);
++    } else {
++      GetLocalCache().InsertOrUpdate(aPrefName, value);
++    }
 +  }
++  BumpGeneration();
 +}
 +
 +// libpref's table is main-thread only: a release build looks it up without a
@@ -272,6 +360,7 @@ index 0000000000..dcb359d25a
 +      GetLocalCache().InsertOrUpdate(name, nsCString(value));
 +    }
 +  }
++  BumpGeneration();
 +}
 +
 +/* static */ void
@@ -284,6 +373,7 @@ index 0000000000..dcb359d25a
 +    GetLocalCache().InsertOrUpdate(prefName, nsCString(value));
 +    GetMissCache().Remove(prefName);
 +  }
++  BumpGeneration();
 +  // Sync to parent for cross-process availability
 +  if (XRE_IsParentProcess()) {
 +    Preferences::SetCString(prefName.get(), value, kKind);
@@ -333,12 +423,16 @@ index 0000000000..dcb359d25a
 +  nsCString fromParent;
 +  cc->SendRoverfoxStorageGet(prefName, &fromParent);
 +  outValue = fromParent;
-+  MutexAutoLock lock(GetLocalCacheMutex());
 +  if (fromParent.IsEmpty()) {
++    MutexAutoLock lock(GetLocalCacheMutex());
 +    GetMissCache().Insert(prefName);
-+  } else {
++    return;
++  }
++  {
++    MutexAutoLock lock(GetLocalCacheMutex());
 +    GetLocalCache().InsertOrUpdate(prefName, fromParent);
 +  }
++  BumpGeneration();
 +}
 +
 +/* static */ void
@@ -409,6 +503,7 @@ index 0000000000..dcb359d25a
 +    MutexAutoLock lock(GetLocalCacheMutex());
 +    GetLocalCache().Remove(prefName);
 +  }
++  BumpGeneration();
 +  if (XRE_IsParentProcess()) {
 +    // A default pref cannot be deleted; empty reads as unset.
 +    Preferences::SetCString(prefName.get(), ""_ns, kKind);
@@ -422,7 +517,7 @@ new file mode 100644
 index 0000000000..e6d64378e1
 --- /dev/null
 +++ b/dom/base/RoverfoxStorageManager.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,53 @@
 +#ifndef mozilla_dom_RoverfoxStorageManager_h
 +#define mozilla_dom_RoverfoxStorageManager_h
 +
@@ -448,6 +543,13 @@ index 0000000000..e6d64378e1
 +  static void PutString(const nsAString& key, const nsAString& value);
 +  static bool GetString(const nsAString& key, nsAString& outValue);
 +  static void Remove(const nsAString& key);
++  // The same reads for the value stored under aPrefix followed by aId
++  // ("nav_hwc_", 3 -> "nav_hwc_3"), for getters a page can call in a loop.
++  // Each thread memoizes the answer until any write in this process, so a
++  // repeat read builds no key and takes no lock. aPrefix must be a string
++  // literal: its address is part of the memo key.
++  static bool GetUint(const char* aPrefix, uint32_t aId, uint32_t& outValue);
++  static bool GetBool(const char* aPrefix, uint32_t aId, bool& outValue);
 +  // A put reached this process's prefs: copy it into the local cache (main
 +  // thread only), which is all a worker thread reads.
 +  static void MirrorPref(const nsACString& aPrefName);
@@ -457,6 +559,9 @@ index 0000000000..e6d64378e1
 +  static void SetPrefValue(const nsCString& prefName, const nsCString& value);
 +  static void ReadValue(const nsCString& prefName, nsACString& outValue);
 +  static void EnsureMirror();
++  struct MemoSlot;
++  static MemoSlot ReadMemoized(const char* aPrefix, uint32_t aId);
++  static void BumpGeneration();
 +  static nsTHashSet<nsCString>& GetMissCache();
 +  static nsTHashMap<nsCStringHashKey, nsCString>& GetLocalCache();
 +  static mozilla::Mutex& GetLocalCacheMutex();
