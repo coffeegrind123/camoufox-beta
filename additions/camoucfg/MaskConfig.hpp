@@ -18,6 +18,9 @@ Written by daijro.
 #include <variant>
 #include <cstddef>
 #include <vector>
+#include <unordered_map>
+#include <cstring>
+#include <cstdint>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -47,11 +50,9 @@ inline std::optional<std::string> get_env_utf8(const std::string& name) {
 #endif
 }
 
-inline const nlohmann::json& GetJson() {
-  static std::once_flag initFlag;
-  static nlohmann::json jsonConfig;
-
-  std::call_once(initFlag, []() {
+inline nlohmann::json LoadJson() {
+  nlohmann::json jsonConfig;
+  {
     std::string jsonString;
     int index = 1;
 
@@ -71,41 +72,167 @@ inline const nlohmann::json& GetJson() {
     }
 
     if (jsonString.empty()) {
-      jsonConfig = nlohmann::json{};
-      return;
+      return nlohmann::json{};
     }
 
     // Validate
     if (!nlohmann::json::accept(jsonString)) {
       printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
-      jsonConfig = nlohmann::json{};
-      return;
+      return nlohmann::json{};
     }
 
     jsonConfig = nlohmann::json::parse(jsonString);
-  });
-
+  }
   return jsonConfig;
 }
 
-inline bool HasKey(const std::string& key, const nlohmann::json& data) {
-  return data.contains(key);
+// The config is parsed once and never changes. Spoofed getters read it on
+// every call (screen.width, devicePixelRatio, WebGL getParameter...), so a
+// lookup has to cost about what the stock getter does: a function-local
+// static instead of std::call_once, and one search per key through a
+// string_view, where each getter used to build a std::string (a heap
+// allocation) and search two or three times. Measured in the browser against
+// stock Firefox 152.0.4 before this: screen.availWidth 1211 ns vs 239 ns,
+// devicePixelRatio 134 ns vs 40 ns, from script, which a page can time.
+inline const nlohmann::json& GetJson() {
+  static const nlohmann::json jsonConfig = LoadJson();
+  return jsonConfig;
+}
+
+// Hash indexes over the config's keys, built once. json objects are ordered
+// maps, and walking one per lookup cost ~40 ns against a 52-key launch config
+// (std::unordered_map still ~24 ns) -- as much as a whole stock getter like
+// devicePixelRatio. This table is open-addressed at under half load, hashes
+// the length and the first and last 8 bytes, and confirms with one compare:
+// ~5 ns. The string_views point at the parsed config's own keys, which live
+// as long as it does. Indexed: the top level, and every object directly under
+// it (the WebGL parameter tables and the like).
+template <typename V>
+class FlatIndex {
+ public:
+  FlatIndex() = default;
+
+  explicit FlatIndex(size_t aCount) {
+    size_t capacity = 16;
+    while (capacity < aCount * 2 + 1) capacity *= 2;
+    mSlots.assign(capacity, Slot{});
+    mMask = capacity - 1;
+  }
+
+  // `value` must be non-null; keys must be unique and outlive the index.
+  void Insert(std::string_view key, V value) {
+    size_t i = Hash(key) & mMask;
+    while (mSlots[i].value) i = (i + 1) & mMask;
+    mSlots[i] = Slot{key, value};
+  }
+
+  V Find(std::string_view key) const {
+    if (mSlots.empty()) return nullptr;
+    for (size_t i = Hash(key) & mMask; mSlots[i].value; i = (i + 1) & mMask) {
+      if (mSlots[i].key == key) return mSlots[i].value;
+    }
+    return nullptr;
+  }
+
+ private:
+  struct Slot {
+    std::string_view key;
+    V value = nullptr;
+  };
+
+  static size_t Hash(std::string_view key) {
+    uint64_t head = 0;
+    uint64_t tail = 0;
+    size_t n = key.size();
+    if (n >= 8) {
+      std::memcpy(&head, key.data(), 8);
+      std::memcpy(&tail, key.data() + n - 8, 8);
+    } else {
+      std::memcpy(&head, key.data(), n);
+    }
+    uint64_t h = (head * 0x9E3779B97F4A7C15ULL) ^ ((tail + n) * 0xC2B2AE3D27D4EB4FULL);
+    return static_cast<size_t>(h ^ (h >> 31));
+  }
+
+  std::vector<Slot> mSlots;
+  size_t mMask = 0;
+};
+
+using KeyIndex = FlatIndex<const nlohmann::json*>;
+
+inline KeyIndex IndexObject(const nlohmann::json& obj) {
+  KeyIndex index(obj.size());
+  for (auto it = obj.begin(); it != obj.end(); ++it) {
+    index.Insert(std::string_view(it.key()), &*it);
+  }
+  return index;
+}
+
+struct ConfigIndex {
+  KeyIndex top;
+  // Every object directly under the top level, by address (Find(obj, key))
+  // and by name (FindNested, the WebGL getParameter path).
+  std::unordered_map<const nlohmann::json*, KeyIndex> tables;
+  FlatIndex<const KeyIndex*> tablesByName;
+};
+
+inline const ConfigIndex& GetIndex() {
+  static const ConfigIndex index = [] {
+    ConfigIndex built;
+    const auto& data = GetJson();
+    if (!data.is_object()) return built;
+    built.top = IndexObject(data);
+    for (const auto& value : data) {
+      if (value.is_object()) built.tables.emplace(&value, IndexObject(value));
+    }
+    // unordered_map nodes do not move, so these pointers stay valid.
+    built.tablesByName = FlatIndex<const KeyIndex*>(built.tables.size());
+    for (auto it = data.begin(); it != data.end(); ++it) {
+      auto table = built.tables.find(&*it);
+      if (table != built.tables.end()) {
+        built.tablesByName.Insert(std::string_view(it.key()), &table->second);
+      }
+    }
+    return built;
+  }();
+  return index;
+}
+
+// The value stored under `key` in `obj`, or null when `obj` is not an object
+// or has no such key. Never allocates.
+inline const nlohmann::json* Find(const nlohmann::json& obj,
+                                  std::string_view key) {
+  if (!obj.is_object()) return nullptr;
+  const auto& index = GetIndex();
+  if (&obj == &GetJson()) return index.top.Find(key);
+  auto table = index.tables.find(&obj);
+  if (table != index.tables.end()) return table->second.Find(key);
+  auto it = obj.find(key);
+  return it == obj.end() ? nullptr : &*it;
+}
+
+inline const nlohmann::json* Find(std::string_view key) {
+  return GetIndex().top.Find(key);
+}
+
+inline bool HasKey(std::string_view key, const nlohmann::json& data) {
+  return Find(data, key) != nullptr;
 }
 
 // json.hpp maps JSON_THROW to std::abort() in this build, so .get<std::string>()
 // on a value of any other type kills the process. A wrongly typed key reads as
 // unset instead (lang315/camoufox, MaskConfig hardening).
-inline std::optional<std::string> GetString(const std::string& key) {
-  const auto& data = GetJson();
-  if (!HasKey(key, data) || !data[key].is_string()) return std::nullopt;
-  return data[key].get<std::string>();
+inline std::optional<std::string> GetString(std::string_view key) {
+  const auto* value = Find(key);
+  if (!value || !value->is_string()) return std::nullopt;
+  return value->get<std::string>();
 }
 
-inline std::vector<std::string> GetStringList(const std::string& key) {
+inline std::vector<std::string> GetStringList(std::string_view key) {
   std::vector<std::string> result;
-  const auto& data = GetJson();
-  if (!HasKey(key, data) || !data[key].is_array()) return {};
-  for (const auto& item : data[key]) {
+  const auto* value = Find(key);
+  if (!value || !value->is_array()) return {};
+  for (const auto& item : *value) {
     if (item.is_string()) {
       result.push_back(item.get<std::string>());
     }
@@ -113,7 +240,7 @@ inline std::vector<std::string> GetStringList(const std::string& key) {
   return result;
 }
 
-inline std::vector<std::string> GetStringListLower(const std::string& key) {
+inline std::vector<std::string> GetStringListLower(std::string_view key) {
   std::vector<std::string> result = GetStringList(key);
   for (auto& str : result) {
     std::transform(str.begin(), str.end(), str.begin(),
@@ -148,56 +275,60 @@ inline bool IsFontAllowed(std::string_view family) {
 }
 
 template <typename T>
-inline std::optional<T> GetUintImpl(const std::string& key) {
-  const auto& data = GetJson();
-  if (!HasKey(key, data)) return std::nullopt;
-  if (data[key].is_number_unsigned()) return data[key].get<T>();
-  printf_stderr("ERROR: Value for key '%s' is not an unsigned integer\n",
-                key.c_str());
+inline std::optional<T> GetUintImpl(std::string_view key) {
+  const auto* value = Find(key);
+  if (!value) return std::nullopt;
+  if (value->is_number_unsigned()) return value->get<T>();
+  printf_stderr("ERROR: Value for key '%.*s' is not an unsigned integer\n",
+                static_cast<int>(key.size()), key.data());
   return std::nullopt;
 }
 
-inline std::optional<uint64_t> GetUint64(const std::string& key) {
+inline std::optional<uint64_t> GetUint64(std::string_view key) {
   return GetUintImpl<uint64_t>(key);
 }
 
-inline std::optional<uint32_t> GetUint32(const std::string& key) {
+inline std::optional<uint32_t> GetUint32(std::string_view key) {
   return GetUintImpl<uint32_t>(key);
 }
 
-inline std::optional<int32_t> GetInt32(const std::string& key) {
-  const auto& data = GetJson();
-  if (!HasKey(key, data)) return std::nullopt;
-  if (data[key].is_number_integer()) return data[key].get<int32_t>();
-  printf_stderr("ERROR: Value for key '%s' is not an integer\n", key.c_str());
+inline std::optional<int32_t> GetInt32(std::string_view key) {
+  const auto* value = Find(key);
+  if (!value) return std::nullopt;
+  if (value->is_number_integer()) return value->get<int32_t>();
+  printf_stderr("ERROR: Value for key '%.*s' is not an integer\n",
+                static_cast<int>(key.size()), key.data());
   return std::nullopt;
 }
 
-inline std::optional<double> GetDouble(const std::string& key) {
-  const auto& data = GetJson();
-  if (!HasKey(key, data)) return std::nullopt;
-  if (data[key].is_number_float()) return data[key].get<double>();
-  if (data[key].is_number_unsigned() || data[key].is_number_integer())
-    return static_cast<double>(data[key].get<int64_t>());
-  printf_stderr("ERROR: Value for key '%s' is not a double\n", key.c_str());
+inline std::optional<double> GetDouble(std::string_view key) {
+  const auto* value = Find(key);
+  if (!value) return std::nullopt;
+  if (value->is_number_float()) return value->get<double>();
+  if (value->is_number_unsigned() || value->is_number_integer())
+    return static_cast<double>(value->get<int64_t>());
+  printf_stderr("ERROR: Value for key '%.*s' is not a double\n",
+                static_cast<int>(key.size()), key.data());
   return std::nullopt;
 }
 
-inline std::optional<bool> GetBool(const std::string& key) {
-  const auto& data = GetJson();
-  if (!HasKey(key, data)) return std::nullopt;
-  if (data[key].is_boolean()) return data[key].get<bool>();
-  printf_stderr("ERROR: Value for key '%s' is not a boolean\n", key.c_str());
+inline std::optional<bool> GetBool(std::string_view key) {
+  const auto* value = Find(key);
+  if (!value) return std::nullopt;
+  if (value->is_boolean()) return value->get<bool>();
+  printf_stderr("ERROR: Value for key '%.*s' is not a boolean\n",
+                static_cast<int>(key.size()), key.data());
   return std::nullopt;
 }
 
-inline bool CheckBool(const std::string& key) {
+inline bool CheckBool(std::string_view key) {
   return GetBool(key).value_or(false);
 }
 
-inline std::optional<std::array<uint32_t, 4>> GetRect(
-    const std::string& left, const std::string& top, const std::string& width,
-    const std::string& height) {
+inline std::optional<std::array<uint32_t, 4>> GetRect(std::string_view left,
+                                                     std::string_view top,
+                                                     std::string_view width,
+                                                     std::string_view height) {
   std::array<std::optional<uint32_t>, 4> values = {
       GetUint32(left).value_or(0), GetUint32(top).value_or(0), GetUint32(width),
       GetUint32(height)};
@@ -205,8 +336,9 @@ inline std::optional<std::array<uint32_t, 4>> GetRect(
   if (!values[2].has_value() || !values[3].has_value()) {
     if (values[2].has_value() ^ values[3].has_value())
       printf_stderr(
-          "Both %s and %s must be provided. Using default behavior.\n",
-          height.c_str(), width.c_str());
+          "Both %.*s and %.*s must be provided. Using default behavior.\n",
+          static_cast<int>(height.size()), height.data(),
+          static_cast<int>(width.size()), width.data());
     return std::nullopt;
   }
 
@@ -218,8 +350,8 @@ inline std::optional<std::array<uint32_t, 4>> GetRect(
 }
 
 inline std::optional<std::array<int32_t, 4>> GetInt32Rect(
-    const std::string& left, const std::string& top, const std::string& width,
-    const std::string& height) {
+    std::string_view left, std::string_view top, std::string_view width,
+    std::string_view height) {
   if (auto optValue = GetRect(left, top, width, height)) {
     std::array<int32_t, 4> result;
     std::transform(optValue->begin(), optValue->end(), result.begin(),
@@ -231,36 +363,62 @@ inline std::optional<std::array<int32_t, 4>> GetInt32Rect(
 
 // Helpers for WebGL
 
-inline std::optional<nlohmann::json> GetNested(const std::string& domain,
-                                               std::string keyStr) {
-  // A reference, not a copy: this runs on every table-answered WebGL
-  // getParameter, and a copy duplicated the whole parsed config (fonts,
-  // voices, WebGL tables) per call.
-  const auto& data = GetJson();
-  if (!data.contains(domain)) return std::nullopt;
+// The node at config[domain][key], or null. WebGL answers getParameter from
+// these tables on every call, so this returns a pointer into the parsed
+// config rather than a copy.
+inline const nlohmann::json* FindNested(std::string_view domain,
+                                        std::string_view key) {
+  const KeyIndex* table = GetIndex().tablesByName.Find(domain);
+  return table ? table->Find(key) : nullptr;
+}
 
-  if (!data[domain].contains(keyStr)) return std::nullopt;
+// A WebGL enum as the decimal string the parameter tables are keyed by,
+// formatted on the stack (std::to_string allocated on every getParameter).
+struct PnameKey {
+  explicit PnameKey(uint32_t pname) {
+    char* end = mBuf + sizeof(mBuf);
+    mStart = end;
+    do {
+      *--mStart = static_cast<char>('0' + pname % 10);
+      pname /= 10;
+    } while (pname);
+    mLen = static_cast<size_t>(end - mStart);
+  }
+  // mStart points into mBuf, so a copy would point into the original.
+  PnameKey(const PnameKey&) = delete;
+  PnameKey& operator=(const PnameKey&) = delete;
 
-  return data[domain][keyStr];
+  std::string_view View() const { return std::string_view(mStart, mLen); }
+
+ private:
+  char mBuf[10];
+  char* mStart;
+  size_t mLen;
+};
+
+inline std::optional<nlohmann::json> GetNested(std::string_view domain,
+                                               std::string_view keyStr) {
+  if (const auto* value = FindNested(domain, keyStr)) return *value;
+  return std::nullopt;
 }
 
 template <typename T>
-inline std::optional<T> GetAttribute(const std::string attrib, bool isWebGL2) {
-  auto value = MaskConfig::GetNested(
+inline std::optional<T> GetAttribute(std::string_view attrib, bool isWebGL2) {
+  const auto* value = FindNested(
       isWebGL2 ? "webGl2:contextAttributes" : "webGl:contextAttributes",
       attrib);
   if (!value) return std::nullopt;
-  return value.value().get<T>();
+  return value->get<T>();
 }
 
 inline std::optional<
     std::variant<int64_t, bool, double, std::string, std::nullptr_t>>
 GLParam(uint32_t pname, bool isWebGL2) {
-  auto value =
-      MaskConfig::GetNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-                            std::to_string(pname));
+  const auto* value =
+      FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
+                 PnameKey(pname).View());
   if (!value) return std::nullopt;
-  auto data = value.value();
+  const auto& data = *value;
   if (data.is_null()) return std::nullptr_t();
   if (data.is_number_integer()) return data.get<int64_t>();
   if (data.is_boolean()) return data.get<bool>();
@@ -271,11 +429,10 @@ GLParam(uint32_t pname, bool isWebGL2) {
 
 template <typename T>
 inline T MParamGL(uint32_t pname, T defaultValue, bool isWebGL2) {
-  if (auto value = MaskConfig::GetNested(
-          isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-          std::to_string(pname));
-      value.has_value()) {
-    return value.value().get<T>();
+  if (const auto* value =
+          FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
+                     PnameKey(pname).View())) {
+    return value->get<T>();
   }
   return defaultValue;
 }
@@ -284,12 +441,11 @@ template <typename T>
 inline std::vector<T> MParamGLVector(uint32_t pname,
                                      std::vector<T> defaultValue,
                                      bool isWebGL2) {
-  if (auto value = MaskConfig::GetNested(
-          isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
-          std::to_string(pname));
-      value.has_value()) {
-    if (value.value().is_array()) {
-      std::array<T, 4UL> result = value.value().get<std::array<T, 4UL>>();
+  if (const auto* value =
+          FindNested(isWebGL2 ? "webGl2:parameters" : "webGl:parameters",
+                     PnameKey(pname).View())) {
+    if (value->is_array()) {
+      std::array<T, 4UL> result = value->get<std::array<T, 4UL>>();
       return std::vector<T>(result.begin(), result.end());
     }
   }
@@ -300,12 +456,12 @@ inline std::optional<std::array<int32_t, 3UL>> MShaderData(
     uint32_t shaderType, uint32_t precisionType, bool isWebGL2) {
   std::string valueName =
       std::to_string(shaderType) + "," + std::to_string(precisionType);
-  if (auto value =
-          MaskConfig::GetNested(isWebGL2 ? "webGl2:shaderPrecisionFormats"
-                                         : "webGl:shaderPrecisionFormats",
-                                valueName)) {
+  if (const auto* value =
+          FindNested(isWebGL2 ? "webGl2:shaderPrecisionFormats"
+                              : "webGl:shaderPrecisionFormats",
+                     valueName)) {
     // Convert {rangeMin: int, rangeMax: int, precision: int} to array
-    auto data = value.value();
+    const auto& data = *value;
     // Assert rangeMin, rangeMax, and precision are present
     if (!data.contains("rangeMin") || !data.contains("rangeMax") ||
         !data.contains("precision")) {
