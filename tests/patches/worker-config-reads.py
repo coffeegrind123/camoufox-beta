@@ -61,6 +61,14 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class QuietServer(http.server.ThreadingHTTPServer):
+    # A page torn down mid-response (a crashed or closed context) breaks the
+    # pipe; the default handler prints a traceback, which the guard runner
+    # keeps as the tail of the output in place of the actual verdict.
+    def handle_error(self, request, client_address):
+        pass
+
+
 def check_values(binary, url, failures):
     from camoufox.sync_api import Camoufox
     from camoufox.fingerprints import generate_context_fingerprint
@@ -120,7 +128,7 @@ def main() -> int:
     binary = resolve_binary()
     site = tempfile.mkdtemp()
     Path(site, "p.html").write_text("<!doctype html><meta charset=utf-8><body>x</body>")
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=site))
+    srv = QuietServer(("127.0.0.1", 0), functools.partial(Quiet, directory=site))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/p.html"
 
