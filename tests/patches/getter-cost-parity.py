@@ -8,6 +8,10 @@ machine: against stock Firefox 152.0.4 on the same host, screen.width took
 screen.width's cost relative to screen.orientation.type (untouched by
 Camoufox) was ~10x where stock's is ~2x.
 
+The first read in a page is checked too: it used to make a synchronous
+round trip to the parent process for every unset key, so a page's first
+navigator.hardwareConcurrency took 16-54 ms against stock's under 1 ms.
+
 This guard times the same page in stock Firefox of the version in upstream.sh
 (STOCK_FIREFOX=<path to the firefox binary>, else downloaded once into
 ~/.cache/camoufox-ci) and in Camoufox with a per-context identity, on the same
@@ -40,6 +44,11 @@ LAUNCHES = 2
 SLOWER_FACTOR = 2.0
 MIN_GAP_NS = 30.0
 PAGE_TIMEOUT_S = 240
+FIRST_READ_GAP_MS = 5.0
+
+# Read once, cold, before anything else in the page touches them.
+FIRST_READS = ["navigator.hardwareConcurrency", "screen.width", "screen.colorDepth",
+               "devicePixelRatio", "navigator.globalPrivacyControl"]
 
 # Spoofed getters, and controls Camoufox does not touch (a sanity check that
 # the two browsers are comparable on this machine).
@@ -78,12 +87,19 @@ function bench(exprs, setup) {
 }
 (async () => {
   const spec = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+  const first = {};
+  for (const e of spec.first) {
+    const f = new Function('return (' + e + ');');
+    const t = performance.now();
+    f();
+    first[e] = performance.now() - t;
+  }
   const src = 'const bench = ' + bench.toString() + '; onmessage = e => postMessage(bench(e.data, ""));';
   const w = new Worker(URL.createObjectURL(new Blob([src])));
   const worker = await new Promise(r => { w.onmessage = e => r(e.data); w.postMessage(spec.worker); });
   const win = bench(spec.window,
     "var C = document.createElement('canvas').getContext('2d'); var G = document.createElement('canvas').getContext('webgl');");
-  const res = {window: win, worker};
+  const res = {window: win, worker, first};
   document.body.dataset.result = JSON.stringify(res);
   fetch('/result', {method: 'POST', body: JSON.stringify(res)});
 })();
@@ -181,23 +197,28 @@ def run_stock(binary, url):
         env=no_proxy_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def run_camoufox(binary, url):
+def run_camoufox(binary, url, identity):
+    """identity: "launch" (a plain page: every per-context lookup misses) or
+    "context" (a per-context fingerprint: every lookup hits)."""
     from camoufox.sync_api import Camoufox
     from camoufox.fingerprints import generate_context_fingerprint
 
-    fp = generate_context_fingerprint(os="windows")
     with Camoufox(os="windows", headless=True, executable_path=str(binary),
                   i_know_what_im_doing=True) as browser:
-        ctx = browser.new_context(**fp["context_options"])
-        ctx.add_init_script(fp["init_script"])
-        page = ctx.new_page()
+        if identity == "context":
+            fp = generate_context_fingerprint(os="windows")
+            ctx = browser.new_context(**fp["context_options"])
+            ctx.add_init_script(fp["init_script"])
+            page = ctx.new_page()
+        else:
+            page = browser.new_page()
         page.goto(url)
         page.wait_for_function("document.body.dataset.result", timeout=PAGE_TIMEOUT_S * 1000)
         return json.loads(page.evaluate("document.body.dataset.result"))
 
 
 def fastest(runs):
-    out = {}
+    out = {"first": {e: min(r["first"][e] for r in runs) for e in runs[0]["first"]}}
     for where in ("window", "worker"):
         out[where] = {}
         for expr in runs[0][where]:
@@ -213,10 +234,11 @@ def main() -> int:
     server = Server(("127.0.0.1", 0), Handler)
     server.results = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    spec = json.dumps({"window": WINDOW + CONTROLS, "worker": WORKER + CONTROLS[1:]})
+    spec = json.dumps({"window": WINDOW + CONTROLS, "worker": WORKER + CONTROLS[1:], "first": FIRST_READS})
     url = f"http://127.0.0.1:{server.server_address[1]}/#" + urllib.request.quote(spec)
 
-    stock_runs, camou_runs = [], []
+    stock_runs = []
+    camou_runs = {"launch": [], "context": []}
     try:
         for _ in range(LAUNCHES):
             server.results = []
@@ -230,28 +252,40 @@ def main() -> int:
                 print("FAIL: stock Firefox never reported -- check is vacuous")
                 return 1
             stock_runs.append(server.results[0])
-            camou_runs.append(run_camoufox(camoufox_bin, url))
+            for identity, runs in camou_runs.items():
+                runs.append(run_camoufox(camoufox_bin, url, identity))
     finally:
         server.shutdown()
 
-    stock, camou = fastest(stock_runs), fastest(camou_runs)
+    stock = fastest(stock_runs)
     failures = []
-    print(f"{'':6s} {'expression':44s} {'stock':>8s} {'camoufox':>9s}  ns/op")
-    for where in ("window", "worker"):
-        for expr, s in stock[where].items():
-            c = camou[where].get(expr)
-            if s is None or c is None:
-                print(f"{where:6s} {expr[:44]:44s} {'-':>8s} {'-':>9s}  not measurable")
-                continue
-            control = expr in CONTROLS
-            slow = c > SLOWER_FACTOR * s and c - s >= MIN_GAP_NS
-            mark = "  <- control" if control else ("  <- SLOWER" if slow else "")
-            print(f"{where:6s} {expr[:44]:44s} {s:8.0f} {c:9.0f}{mark}")
-            if slow and not control:
-                failures.append(f"{where} {expr}: {c:.0f} ns vs stock {s:.0f} ns")
-            if slow and control:
-                failures.append(f"{where} control {expr} differs ({c:.0f} vs {s:.0f} ns): "
-                                f"the two browsers are not comparable here -- check is vacuous")
+    for identity, runs in camou_runs.items():
+        camou = fastest(runs)
+        print(f"\n== Camoufox, {identity} identity")
+        print(f"{'':6s} {'expression':44s} {'stock':>8s} {'camoufox':>9s}  ns/op")
+        for where in ("window", "worker"):
+            for expr, s in stock[where].items():
+                c = camou[where].get(expr)
+                if s is None or c is None:
+                    print(f"{where:6s} {expr[:44]:44s} {'-':>8s} {'-':>9s}  not measurable")
+                    continue
+                control = expr in CONTROLS
+                slow = c > SLOWER_FACTOR * s and c - s >= MIN_GAP_NS
+                mark = "  <- control" if control else ("  <- SLOWER" if slow else "")
+                print(f"{where:6s} {expr[:44]:44s} {s:8.0f} {c:9.0f}{mark}")
+                if slow and not control:
+                    failures.append(f"{identity}: {where} {expr}: {c:.0f} ns vs stock {s:.0f} ns")
+                if slow and control:
+                    failures.append(f"{identity}: control {where} {expr} differs ({c:.0f} vs {s:.0f} ns): "
+                                    f"the two browsers are not comparable here -- check is vacuous")
+
+        print(f"{'first read (cold)':51s} {'stock':>8s} {'camoufox':>9s}  ms")
+        for expr, s in stock["first"].items():
+            c = camou["first"][expr]
+            slow = c - s > FIRST_READ_GAP_MS
+            print(f"{expr[:51]:51s} {s:8.2f} {c:9.2f}{'  <- SLOWER' if slow else ''}")
+            if slow:
+                failures.append(f"{identity}: first read of {expr}: {c:.1f} ms vs stock {s:.1f} ms")
 
     print()
     if failures:
