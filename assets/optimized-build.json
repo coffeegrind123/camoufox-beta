@@ -3,8 +3,8 @@
   "rust": "1.90.0",
   "profile": {
     "repository": "coffeegrind123/camoufox-beta",
-    "tag": null,
+    "tag": "pgo-152.0.4-r2",
     "asset": "pgo-profile.tar.xz",
-    "sha256": null
+    "sha256": "7c69544111984d8088e331b6c40a70184d155785e6446e3af63bc2670a2787e8"
   }
 }
