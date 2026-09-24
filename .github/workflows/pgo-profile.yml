@@ -25,8 +25,8 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
-  profile:
-    name: Instrumented build + training run
+  instrumented:
+    name: Instrumented build
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
@@ -70,13 +70,15 @@ jobs:
           sudo apt-get install -y lld-18 clang-18
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
           sudo apt-get update
-          sudo apt-get install -y msitools p7zip-full aria2 ccache libsqlite3-dev xvfb
+          sudo apt-get install -y msitools p7zip-full aria2 ccache libsqlite3-dev zstd
 
       - name: Pin the Rust release the optimized build links with
         run: python3 -m ci.pgo toolchain
 
+      # restore + save, not actions/cache: its save runs only when the whole job
+      # succeeds, and a failed first run threw away two hours of compilation.
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           # Instrumented objects differ from the optimized build's; own key.
@@ -90,7 +92,7 @@ jobs:
           sudo mkswap /swapfile && sudo swapon /swapfile
           free -h
 
-      - run: pip install -r ci/requirements.txt -e pythonlib
+      - run: pip install -r ci/requirements.txt
 
       - name: Prepare the source tree
         env:
@@ -110,6 +112,84 @@ jobs:
         run: python3 -m ci.run_build
 
       - run: ccache -s
+        if: always()
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-pgogen-${{ hashFiles('upstream.sh') }}-${{ hashFiles('patches/**', 'additions/**', 'assets/*.mozconfig', 'assets/optimized-build.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Package the instrumented browser
+        run: |
+          set -euo pipefail
+          . ./upstream.sh
+          src="camoufox-$version-$release/obj-x86_64-pc-linux-gnu/dist/bin"
+          # The launcher needs the bundled fonts and fontconfig next to the
+          # binary (a first run died on fontconfig/windows/fonts.conf), and
+          # properties.json beside it; mach does not put them there.
+          make stage-fonts
+          for f in properties.json chrome.css camoucfg.jvv; do
+            [ -f "$src/$f" ] || cp -v "settings/$f" "$src/$f"
+          done
+          for required in camoufox-bin properties.json fonts/windows fontconfig/windows; do
+            [ -e "$src/$required" ] || { echo "::error::instrumented dist is missing $required"; exit 1; }
+          done
+          # -h: dist/bin is built from symlinks into the source tree, which
+          # dangle on the runner that unpacks this.
+          tar -C "$(dirname "$src")" -chf - bin | zstd -3 -T0 -o pgo-instrumented.tar.zst
+          ls -lh pgo-instrumented.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgo-instrumented
+          path: pgo-instrumented.tar.zst
+          retention-days: 7
+
+  train:
+    name: Training run
+    needs: instrumented
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BUILD_TARGET: linux,x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 xvfb zstd msitools p7zip-full
+
+      - name: Pin the Rust release
+        run: python3 -m ci.pgo toolchain
+
+      - run: pip install -r ci/requirements.txt -e pythonlib
+
+      # The training run needs the source tree (build/pgo, testing/profiles,
+      # the mach virtualenv) and the bootstrapped llvm-profdata, not a build.
+      - name: Prepare the source tree
+        env:
+          CAMOUFOX_PASSWD: ${{ secrets.CAMOUFOX_PASSWD }}
+        run: python3 -m ci.run_prepare
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pgo-instrumented
+
+      - name: Unpack the instrumented browser into the objdir
+        run: |
+          set -euo pipefail
+          . ./upstream.sh
+          dist="camoufox-$version-$release/obj-x86_64-pc-linux-gnu/dist"
+          mkdir -p "$dist"
+          zstd -dc pgo-instrumented.tar.zst | tar -C "$dist" -xf -
+          ls -l "$dist/bin/camoufox-bin"
 
       - name: Training run
         run: xvfb-run -a -s "-screen 0 1920x1080x24" python3 -m ci.pgo generate --out pgo-out
