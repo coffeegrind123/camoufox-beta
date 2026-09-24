@@ -1,0 +1,123 @@
+# Trains the PGO profile every optimized build consumes (ci/pgo.py).
+#
+# Stock Firefox is built with cross-language LTO and a profile from an
+# instrumented build running Mozilla's training pages. Without both, Gecko's
+# C++ ran 1.3-1.8x stock while JIT-compiled script did not -- a ratio a page
+# can time. This workflow is stage one of stock's recipe: build instrumented,
+# train, publish the merged profile as a release asset. Pin its output in
+# assets/optimized-build.json (the job summary prints the JSON to paste).
+#
+# Run once per Firefox version, or with a new revision to retrain.
+name: PGO profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Profile revision for this Firefox version (bump to retrain)"
+        required: true
+        default: "1"
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  profile:
+    name: Instrumented build + training run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@8831c82abf29b34eb2caac48d5f999ecfc0d8eef # v4.1
+        with:
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+          remove-cached-tools: "true"
+          remove-swapfile: "true"
+
+      - name: Remove unwanted tools
+        run: |
+          sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' \
+            '^mongodb-.*' '^mysql-.*' > /dev/null 2>&1 || true
+          sudo apt-get remove -y azure-cli google-chrome-stable firefox mono-devel \
+            libgl1-mesa-dri --fix-missing > /dev/null 2>&1 || true
+          sudo apt-get autoremove -y > /dev/null 2>&1 || true
+          sudo apt-get clean > /dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Install build dependencies
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 18
+          sudo apt-get install -y lld-18 clang-18
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
+          sudo apt-get update
+          sudo apt-get install -y msitools p7zip-full aria2 ccache libsqlite3-dev xvfb
+
+      - name: Pin the Rust release the optimized build links with
+        run: python3 -m ci.pgo toolchain
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          # Instrumented objects differ from the optimized build's; own key.
+          key: ccache-pgogen-${{ hashFiles('upstream.sh') }}-${{ hashFiles('patches/**', 'additions/**', 'assets/*.mozconfig', 'assets/optimized-build.json') }}
+          restore-keys: |
+            ccache-pgogen-${{ hashFiles('upstream.sh') }}-
+
+      - name: Create swap
+        run: |
+          sudo fallocate -l 24G /swapfile && sudo chmod 600 /swapfile
+          sudo mkswap /swapfile && sudo swapon /swapfile
+          free -h
+
+      - run: pip install -r ci/requirements.txt -e pythonlib
+
+      - name: Prepare the source tree
+        env:
+          CAMOUFOX_PASSWD: ${{ secrets.CAMOUFOX_PASSWD }}
+        run: |
+          ccache -M 8G && ccache -z
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          python3 -m ci.run_prepare
+
+      - name: Check the rustc/clang pairing
+        run: python3 -m ci.pgo check
+
+      - name: Instrumented build
+        env:
+          CARGO_BUILD_JOBS: "1"
+          CAMOUFOX_PGO_GENERATE: "1"
+        run: python3 -m ci.run_build
+
+      - run: ccache -s
+
+      - name: Training run
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" python3 -m ci.pgo generate --out pgo-out
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m ci.pgo publish --dir pgo-out --revision "${{ inputs.revision }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pgo-profile
+          path: pgo-out/
+          if-no-files-found: ignore

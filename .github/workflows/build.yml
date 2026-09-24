@@ -87,11 +87,23 @@ jobs:
         run: |
           make fetch
 
+      - name: Pin the Rust release the optimized build links with
+        # Before bootstrap, so every rustc the build runs is this one.
+        run: python3 -m ci.pgo toolchain
+
       - name: Setup and bootstrap
         run: |
           make setup-minimal
           make mozbootstrap
           mkdir -p dist
+
+      - name: Optimize as stock does (LTO + PGO)
+        # A release without the pinned profile for this Firefox version is
+        # refused: it would ship the C++-vs-JIT timing ratio ci/pgo.py
+        # describes. Run the "PGO profile" workflow and pin its output.
+        run: |
+          python3 -m ci.pgo check
+          python3 -m ci.pgo fetch --require
 
       - name: Create swap space
         run: |

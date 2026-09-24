@@ -1,0 +1,10 @@
+{
+  "firefox": "152.0.4",
+  "rust": "1.90.0",
+  "profile": {
+    "repository": "coffeegrind123/camoufox-beta",
+    "tag": null,
+    "asset": "pgo-profile.tar.xz",
+    "sha256": null
+  }
+}
