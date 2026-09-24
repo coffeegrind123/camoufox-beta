@@ -550,7 +550,33 @@ index aee042ab75..383ab5a761 100644
        return;
    }
  
-@@ -2355,6 +2559,17 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
+@@ -2319,9 +2523,22 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
+           allowRenderer = false;
+         }
+         if (allowRenderer) {
+-          ret = GetUnmaskedRenderer();
+-          if (ret) {
+-            ret = Some(webgl::SanitizeRenderer(*ret));
++          // Camoufox: stock derives RENDERER from the same string as
++          // UNMASKED_RENDERER_WEBGL, so on a real machine the two are equal.
++          // The spoofed renderer (already a sanitized bucket string) must
++          // answer both; otherwise RENDERER reports the host's own GPU --
++          // "Generic Renderer" for Mesa's D3D12 driver -- next to a spoofed
++          // "ANGLE (NVIDIA, ...)" UNMASKED_RENDERER.
++          nsAutoString stored;
++          if (WebGLParamsManager::GetRenderer(GetUserContextId(), stored)) {
++            ret = Some(std::string(NS_ConvertUTF16toUTF8(stored).get()));
++          } else if (auto value = MaskConfig::GetString("webGl:renderer")) {
++            ret = Some(value.value());
++          } else {
++            ret = GetUnmaskedRenderer();
++            if (ret) {
++              ret = Some(webgl::SanitizeRenderer(*ret));
++            }
+           }
+         }
+         if (!ret) {
+@@ -2355,6 +2572,17 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
  
          switch (pname) {
            case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_RENDERER_WEBGL:
@@ -568,7 +594,7 @@ index aee042ab75..383ab5a761 100644
              if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo) ||
                  ShouldResistFingerprinting(RFPTarget::WebGLRendererConstant)) {
                ret = Some("Mozilla"_ns);
-@@ -2367,6 +2582,17 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
+@@ -2367,6 +2595,17 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
              break;
  
            case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_VENDOR_WEBGL:
@@ -586,7 +612,7 @@ index aee042ab75..383ab5a761 100644
              if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo)) {
                ret = Some("Mozilla"_ns);
              } else if (ShouldResistFingerprinting(
-@@ -2478,7 +2704,9 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
+@@ -2478,7 +2717,9 @@ void ClientWebGLContext::GetParameter(JSContext* cx, GLenum pname,
          case LOCAL_GL_COLOR_WRITEMASK: {
            const auto mask = uint8_t(*maybe);
            const auto bs = std::bitset<4>(mask);
@@ -597,7 +623,7 @@ index aee042ab75..383ab5a761 100644
            JS::Rooted<JS::Value> arr(cx);
            if (!dom::ToJSValue(cx, src.data(), src.size(), &arr)) {
              rv = NS_ERROR_OUT_OF_MEMORY;
-@@ -2871,6 +3099,24 @@ ClientWebGLContext::GetShaderPrecisionFormat(const GLenum shadertype,
+@@ -2871,6 +3112,24 @@ ClientWebGLContext::GetShaderPrecisionFormat(const GLenum shadertype,
    const FuncScope funcScope(*this, "getShaderPrecisionFormat");
    if (IsContextLost()) return nullptr;
  
@@ -622,7 +648,7 @@ index aee042ab75..383ab5a761 100644
    const auto& shaderPrecisions = *notLost->info.shaderPrecisions;
    const auto args =
        webgl::GetShaderPrecisionFormatArgs{shadertype, precisiontype};
-@@ -5948,6 +6194,17 @@ bool ClientWebGLContext::IsSupported(const WebGLExtensionID ext,
+@@ -5948,6 +6207,17 @@ bool ClientWebGLContext::IsSupported(const WebGLExtensionID ext,
      return false;
    }
  
@@ -640,7 +666,7 @@ index aee042ab75..383ab5a761 100644
    const auto& limits = Limits();
    return limits.supportedExtensions[ext];
  }
-@@ -5959,6 +6216,18 @@ void ClientWebGLContext::GetSupportedExtensions(
+@@ -5959,6 +6229,18 @@ void ClientWebGLContext::GetSupportedExtensions(
    if (IsContextLost()) return;
  
    auto& retarr = retval.SetValue();
