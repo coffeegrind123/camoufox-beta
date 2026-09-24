@@ -154,7 +154,6 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target, ver
         with open(version_json, 'w') as f:
             json.dump({"version": version, "release": release}, f)
 
-
         # Add the fonts under fonts/.
         #
         # The bundle stores each face ONCE, in a directory named for the set of

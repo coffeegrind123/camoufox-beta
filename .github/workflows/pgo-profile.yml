@@ -133,7 +133,8 @@ jobs:
           for f in properties.json chrome.css camoucfg.jvv; do
             [ -f "$src/$f" ] || cp -v "settings/$f" "$src/$f"
           done
-          for required in camoufox-bin properties.json fonts/windows fontconfig/windows; do
+          # fonts/ holds the bundle's group directories (bundle/fonts/groups.json).
+          for required in camoufox-bin properties.json fonts/groups.json fonts/LMW fontconfig/windows; do
             [ -e "$src/$required" ] || { echo "::error::instrumented dist is missing $required"; exit 1; }
           done
           # -h: dist/bin is built from symlinks into the source tree, which
