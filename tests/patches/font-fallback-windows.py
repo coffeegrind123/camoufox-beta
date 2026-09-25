@@ -35,7 +35,7 @@ from helpers import resolve_binary  # noqa: E402
 ASSETS = Path(__file__).resolve().parent / "assets"
 TOLERANCE_PX = 0.5
 # Matching widths out of 168; raise it as parity improves, never lower it.
-MIN_MATCHING = 156
+MIN_MATCHING = 160
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):

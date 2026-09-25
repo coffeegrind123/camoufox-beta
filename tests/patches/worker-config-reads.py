@@ -29,7 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import resolve_binary  # noqa: E402
 
 RACE_SECONDS = 30
-WORKERS = 4
+# Two, not four: four spinning workers saturated a 4-core runner and starved
+# the page's navigation (a harness timeout, not the race). Two still crash the
+# unfixed build (2/2 on 4 pinned cores) and leave the fixed one headroom.
+WORKERS = 2
 # One content process, so every context's prefs land in the workers' process.
 ONE_PROCESS = {"dom.ipc.processCount": 1, "dom.ipc.processCount.webIsolated": 1}
 
@@ -117,7 +120,7 @@ def check_race(binary, url, failures):
                 ctx.add_init_script(fp["init_script"])
                 page = ctx.new_page()
                 page.on("crash", lambda _: crashed.append("new context's page"))
-                page.goto(url, timeout=15000)
+                page.goto(url, timeout=45000)
                 ctx.close()
                 created += 1
             if not crashed:
