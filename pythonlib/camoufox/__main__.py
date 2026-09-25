@@ -37,7 +37,6 @@ from .multiversion import (
     remove_version,
     save_config,
     save_repo_cache,
-    set_active,
 )
 from .pkgman import (
     INSTALL_DIR,
@@ -868,7 +867,6 @@ class VersionInfo:
         self._header("Python Packages")
         self._pkg("Camoufox", "camoufox")
         self._pkg("fpgen", "fpgen")
-        self._pkg("Apify Fingerprints", "apify_fingerprint_datapoints")
         self._pkg("Playwright", "playwright")
 
     def browser(self):
@@ -954,7 +952,7 @@ class VersionInfo:
 
         self._header("GeoIP")
         if not ALLOW_GEOIP:
-            # geoip2 package not installed
+            # maxminddb not installed
             self._row("Status", "Not supported (install camoufox[geoip])", style="dim")
         else:
             mmdb_path = get_mmdb_path()
