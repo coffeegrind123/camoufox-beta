@@ -1242,6 +1242,19 @@ def launch_options(
     else:
         firefox_user_prefs.setdefault('ui.useOverlayScrollbars', 1)
 
+    # The scrollbars themselves are drawn by the host build's theme: on a Linux
+    # host a Windows 10 identity's classic scrollbars measured 12 px (GTK's)
+    # where stock 152.0.4 on Windows measures 17. Draw the claimed OS's instead
+    # (widget.non-native-theme.scrollbar.style: 1 macOS, 4 Windows 10, 5
+    # Windows 11), at Windows' own size rather than the host's system metric.
+    if target_os != _host_os_key():
+        if target_os == 'win':
+            overlay = firefox_user_prefs.get('ui.useOverlayScrollbars')
+            firefox_user_prefs.setdefault('widget.non-native-theme.scrollbar.style', 5 if overlay else 4)
+            firefox_user_prefs.setdefault('widget.non-native-theme.win.scrollbar.use-system-size', False)
+        elif target_os == 'mac':
+            firefox_user_prefs.setdefault('widget.non-native-theme.scrollbar.style', 1)
+
     # CSS transitions and animations run in real time, as in stock Firefox.
     # no-css-animations.patch finishes them instantly unless this is set, and a
     # page reads that back in one line: a 2 s width transition sampled at 0.5 s

@@ -135,3 +135,37 @@ class TestAudioNoiseOff:
         from camoufox.fingerprints import generate_context_fingerprint
 
         assert generate_context_fingerprint(os="windows")["config"]["audio:seed"] == 0
+
+
+# Scrollbars are drawn by the host build's theme: GTK's are 12 px where stock
+# Windows 152.0.4 measures 17 (classic, ui.useOverlayScrollbars 0), so a
+# Windows 10 identity on a Linux host showed a 12 px gutter.
+SCROLLBAR_STYLE = "widget.non-native-theme.scrollbar.style"
+
+
+@pytest.mark.parametrize(
+    "overlay, style",
+    [pytest.param(0, 4, id="windows-10-classic"), pytest.param(1, 5, id="windows-11-overlay")],
+)
+def test_windows_identity_draws_windows_scrollbars(launch, overlay, style):
+    _, prefs = launch(WIN_UA, firefox_user_prefs={"ui.useOverlayScrollbars": overlay})
+    assert prefs[SCROLLBAR_STYLE] == style
+    assert prefs["widget.non-native-theme.win.scrollbar.use-system-size"] is False
+
+
+def test_macos_identity_draws_macos_scrollbars(launch):
+    _, prefs = launch(MAC_UA)
+    assert prefs[SCROLLBAR_STYLE] == 1
+
+
+def test_scrollbars_on_a_matching_host_are_left_alone(launch, monkeypatch):
+    _, prefs = launch(LIN_UA)
+    assert SCROLLBAR_STYLE not in prefs
+    monkeypatch.setattr(utils, "_host_os_key", lambda: "win")
+    _, prefs = launch(WIN_UA)
+    assert SCROLLBAR_STYLE not in prefs
+
+
+def test_caller_scrollbar_style_wins(launch):
+    _, prefs = launch(WIN_UA, firefox_user_prefs={SCROLLBAR_STYLE: 2})
+    assert prefs[SCROLLBAR_STYLE] == 2

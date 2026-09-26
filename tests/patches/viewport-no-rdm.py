@@ -8,16 +8,17 @@ draws content with devtools' Android theme and forces overlay scrollbars
 early returns (nsScreen::GetRect, Navigator::MaxTouchPoints). A page reads both:
 
   - scrollbar width: a Windows 10 identity (classic scrollbars, pinned by the
-    launcher) measured 12 px on a launch-level page and 0 px in any context
-    with a viewport -- Windows 10 fonts with overlay scrollbars, a pair no
-    real machine produces;
+    launcher) measured its classic gutter on a launch-level page and 0 px in
+    any context with a viewport -- Windows 10 fonts with overlay scrollbars, a
+    pair no real machine produces;
   - getter cost: screen.availWidth, outerWidth and maxTouchPoints ran at
     0.2-0.6x stock Firefox's cost in a viewport context, 1.0-1.3x elsewhere.
 
 The guard pins classic scrollbars, measures the scrollbar gutter on a
-launch-level page (the control: it must be non-zero, or the check is vacuous),
-then in a context with a viewport (which must really be applied), and requires
-the two to match.
+launch-level page (the control: it must be stock Windows' 17 px, which also
+checks the launcher draws Windows scrollbars on a foreign host), then in a
+context with a viewport (which must really be applied), and requires the two
+to match.
 
     python tests/patches/viewport-no-rdm.py
 """
@@ -29,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import resolve_binary  # noqa: E402
 
 VIEWPORT = {"width": 1000, "height": 600}
+
+# Stock Firefox 152.0.4 on Windows with classic scrollbars (ui.useOverlayScrollbars 0).
+WINDOWS_CLASSIC_PX = 17
 
 PAGE = """<!doctype html><style>body{margin:0;height:3000px}
 #b{width:200px;height:100px;overflow:scroll}</style><div id=b></div>"""
@@ -63,8 +67,9 @@ def main() -> int:
     print(f"  viewport context: {emulated}")
 
     failures = []
-    if control["page"] <= 0 or control["box"] <= 0:
-        failures.append(f"launch page shows no classic scrollbar ({control}) -- check is vacuous")
+    if (control["page"], control["box"]) != (WINDOWS_CLASSIC_PX, WINDOWS_CLASSIC_PX):
+        failures.append(f"launch page scrollbar {control['page']}/{control['box']} px, "
+                        f"stock Windows classic is {WINDOWS_CLASSIC_PX}")
     if emulated["viewport"] != [VIEWPORT["width"], VIEWPORT["height"]]:
         failures.append(f"viewport {VIEWPORT} not applied: page reports {emulated['viewport']}")
     if (emulated["page"], emulated["box"]) != (control["page"], control["box"]):
