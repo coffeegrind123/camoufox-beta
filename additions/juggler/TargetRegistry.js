@@ -718,7 +718,14 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');
       this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');
       this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');
-      this._linkedBrowser.browsingContext.inRDMPane = true;
+      // Camoufox: no Responsive Design Mode for an emulated viewport. Upstream
+      // Playwright sets inRDMPane here; the viewport does not need it (the
+      // browser element's size above is what sizes it), and in RDM content
+      // gets devtools' Android theme -- overlay scrollbars, 0 px where the
+      // identity's classic ones measure 12 -- and stock getters take RDM
+      // early returns (screen.*, outerWidth, maxTouchPoints at 0.2-0.6x
+      // stock's cost), both readable from the page.
+      this._linkedBrowser.browsingContext.inRDMPane = false;
 
       const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();
       const toolbarTop = stackRect.y;
