@@ -2678,3 +2678,58 @@ def test_build_tester_accepts_every_core_count_pythonlib_presents():
         f"build-tester's plausibleHWC rejects core counts pythonlib presents: {missing}. "
         "Add them to the list in build-tester/src/lib/checks/extended.ts."
     )
+
+
+# ---------------------------------------------------------------------------
+# packaging
+# ---------------------------------------------------------------------------
+
+
+def _package_module():
+    """scripts/package.py, imported the way it runs (scripts/ on sys.path)."""
+    import importlib.util
+    import sys
+
+    scripts = CI_ROOT.parent / "scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        spec = importlib.util.spec_from_file_location("camoufox_package", scripts / "package.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(scripts))
+
+
+def test_packaged_font_names_are_ascii(tmp_path):
+    """A plain `unzip` must extract the release zip in any locale.
+
+    The font bundle carries macOS faces named in Japanese (Hiragino). The zip
+    stores those names correctly as UTF-8, but unzip 6.0 under a C/POSIX locale
+    -- a Docker build, a bare SSH shell -- reports every one as a mismatching
+    local filename and exits 1, which stops a consumer's `set -e` install. cg.3
+    had none; cg.4 had twelve.
+    """
+    package = _package_module()
+    fonts = tmp_path / "fonts" / "M"
+    fonts.mkdir(parents=True)
+    (fonts / "18__ヒラギノ角ゴシック W9.ttc").write_bytes(b"w9")
+    (fonts / "21__ヒラギノ角ゴシック W1.ttc").write_bytes(b"w1")
+    (fonts / "07__Helvetica.ttc").write_bytes(b"h")
+
+    package.ascii_file_names(tmp_path / "fonts")
+    names = sorted(p.name for p in fonts.iterdir())
+
+    assert all(name.isascii() for name in names), names
+    assert "07__Helvetica.ttc" in names
+    assert len(names) == 3
+    renamed = [n for n in names if n != "07__Helvetica.ttc"]
+    assert all(n.startswith(("18__", "21__")) and n.endswith(".ttc") for n in renamed), renamed
+    assert sorted((fonts / n).read_bytes() for n in renamed) == [b"w1", b"w9"]
+
+    # Deterministic: the same bundle packages to the same names.
+    again = tmp_path / "again" / "M"
+    again.mkdir(parents=True)
+    (again / "18__ヒラギノ角ゴシック W9.ttc").write_bytes(b"w9")
+    package.ascii_file_names(tmp_path / "again")
+    assert (again / [n for n in renamed if n.startswith("18__")][0]).exists()
