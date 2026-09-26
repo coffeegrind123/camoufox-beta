@@ -24,7 +24,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import resolve_binary  # noqa: E402
 
-EXPECTED = {"macos": "5.0 (Macintosh)", "linux": "5.0 (X11)", "windows": "5.0 (Windows)"}
+# Stock 152.0.4 builds appVersion as "5.0 (" + nsHttpHandler's platform + ")":
+# "Windows", "Macintosh", or "X11" -- plus "; Ubuntu" under the Ubuntu snap,
+# whose user agent carries the same token (nsHttpHandler.cpp, InitUserAgentComponents).
+PLATFORM = {"macos": "Macintosh", "linux": "X11", "windows": "Windows"}
+
+
+def expected_app_version(os_name: str, user_agent: str) -> str:
+    platform = PLATFORM[os_name]
+    if os_name == "linux" and "; Ubuntu;" in user_agent:
+        platform += "; Ubuntu"
+    return f"5.0 ({platform})"
 
 READ = """async () => {
   const src = 'postMessage([navigator.appVersion, navigator.userAgent])';
@@ -56,9 +66,10 @@ def main() -> int:
 
             for where in ("window", "worker"):
                 app_version, user_agent = seen[where]
-                if app_version != EXPECTED[os_name]:
+                expected = expected_app_version(os_name, user_agent)
+                if app_version != expected:
                     failures.append(f"{os_name} {where}: appVersion {app_version!r}, "
-                                    f"expected {EXPECTED[os_name]!r} for UA {user_agent!r}")
+                                    f"expected {expected!r} for UA {user_agent!r}")
                 versions = set(re.findall(r"(?:rv:|Firefox/)(\d+)\.0", user_agent))
                 if versions != {major}:
                     failures.append(f"{os_name} {where}: UA claims {sorted(versions)}, engine is {major}")
