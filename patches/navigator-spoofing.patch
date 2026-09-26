@@ -51,10 +51,20 @@ index bf535cf22d..dc16916ef2 100644
    nsCOMPtr<nsPIDOMWindowInner> window;
  
    if (mWindow) {
-@@ -317,6 +345,11 @@ void Navigator::GetAppCodeName(nsAString& aAppCodeName, ErrorResult& aRv) {
+@@ -317,6 +345,21 @@ void Navigator::GetAppCodeName(nsAString
  
  void Navigator::GetAppVersion(nsAString& aAppVersion, CallerType aCallerType,
                                ErrorResult& aRv) const {
++  // Camoufox: per-context appVersion, from the context's user agent
++  if (mWindow) {
++    uint32_t userContextId = 0;
++    if (BrowsingContext* bc = mWindow->GetBrowsingContext()) {
++      userContextId = bc->OriginAttributesRef().mUserContextId;
++    }
++    if (NavigatorManager::GetAppVersion(userContextId, aAppVersion)) {
++      return;
++    }
++  }
 +  // Camoufox: global config fallback for appVersion
 +  if (auto value = MaskConfig::GetString("navigator.appVersion")) {
 +    aAppVersion.Assign(NS_ConvertUTF8toUTF16(value.value()));
@@ -63,7 +73,7 @@ index bf535cf22d..dc16916ef2 100644
    nsCOMPtr<Document> doc = mWindow->GetExtantDoc();
  
    nsresult rv = GetAppVersion(
-@@ -432,6 +465,24 @@ void Navigator::GetLanguages(nsTArray<nsString>& aLanguages) {
+@@ -432,6 +475,24 @@ void Navigator::GetLanguages(nsTArray<ns
  
  void Navigator::GetPlatform(nsAString& aPlatform, CallerType aCallerType,
                              ErrorResult& aRv) const {
@@ -88,7 +98,7 @@ index bf535cf22d..dc16916ef2 100644
    if (mWindow) {
      BrowsingContext* bc = mWindow->GetBrowsingContext();
      nsString customPlatform;
-@@ -457,6 +508,23 @@ void Navigator::GetPlatform(nsAString& aPlatform, CallerType aCallerType,
+@@ -457,6 +518,23 @@ void Navigator::GetPlatform(nsAString& a
  
  void Navigator::GetOscpu(nsAString& aOSCPU, CallerType aCallerType,
                           ErrorResult& aRv) const {
@@ -112,7 +122,7 @@ index bf535cf22d..dc16916ef2 100644
    if (aCallerType != CallerType::System) {
      // If fingerprinting resistance is on, we will spoof this value. See
      // nsRFPService.h for details about spoofed values.
-@@ -685,6 +753,15 @@ void Navigator::GetDoNotTrack(nsAString& aResult) {
+@@ -685,6 +763,15 @@ void Navigator::GetDoNotTrack(nsAString&
  }
  
  bool Navigator::GlobalPrivacyControl() {
@@ -128,7 +138,7 @@ index bf535cf22d..dc16916ef2 100644
    bool gpcStatus = StaticPrefs::privacy_globalprivacycontrol_enabled();
    if (!gpcStatus) {
      nsCOMPtr<nsILoadContext> loadContext = do_GetInterface(mWindow);
-@@ -696,6 +773,22 @@ bool Navigator::GlobalPrivacyControl() {
+@@ -696,6 +783,22 @@ bool Navigator::GlobalPrivacyControl() {
  }
  
  uint64_t Navigator::HardwareConcurrency() {
@@ -156,11 +166,13 @@ new file mode 100644
 index 0000000000..37a1713159
 --- /dev/null
 +++ b/dom/base/NavigatorManager.cpp
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,130 @@
 +/* Camoufox: Per-context navigator property manager */
 +#include "NavigatorManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
++#include "nsCharSeparatedTokenizer.h"
++#include "nsReadableUtils.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
@@ -233,6 +245,56 @@ index 0000000000..37a1713159
 +  return !IsDisabled("nav_ua", id);
 +}
 +
++/* static */
++bool NavigatorManager::GetAppVersion(uint32_t aId, nsAString& aOut) {
++  // A context's user agent is set per context, but appVersion only through the
++  // launch config, so a macOS context in a Windows launch reported
++  // "5.0 (Windows)". Firefox derives it from the same platform the UA names:
++  // "5.0 (<OS tokens>)", the UA's parenthesised part without the architecture,
++  // the Gecko revision or the Windows version -- the rule pythonlib's
++  // _app_version_from_user_agent applies to the launch config.
++  nsAutoString ua;
++  if (!GetUserAgent(aId, ua)) {
++    return false;
++  }
++  constexpr auto kPrefix = u"Mozilla/5.0 ("_ns;
++  if (!StringBeginsWith(ua, kPrefix)) {
++    return false;
++  }
++  int32_t close = ua.FindChar(u')', kPrefix.Length());
++  if (close == kNotFound) {
++    return false;
++  }
++
++  nsAutoString kept;
++  const nsDependentSubstring block =
++      Substring(ua, kPrefix.Length(), close - kPrefix.Length());
++  for (const auto& part : block.Split(u';')) {
++    nsAutoString token(part);
++    token.Trim(" ");
++    if (StringBeginsWith(token, u"rv:"_ns) || token.EqualsLiteral("Win64") ||
++        token.EqualsLiteral("x64") || token.EqualsLiteral("Mobile") ||
++        token.EqualsLiteral("Tablet") || StringBeginsWith(token, u"Linux "_ns) ||
++        StringBeginsWith(token, u"Intel Mac OS X"_ns)) {
++      continue;
++    }
++    if (StringBeginsWith(token, u"Windows"_ns)) {
++      token.AssignLiteral(u"Windows");
++    }
++    if (!kept.IsEmpty()) {
++      kept.AppendLiteral(u"; ");
++    }
++    kept.Append(token);
++  }
++  if (kept.IsEmpty()) {
++    return false;
++  }
++  aOut.AssignLiteral(u"5.0 (");
++  aOut.Append(kept);
++  aOut.Append(u')');
++  return true;
++}
++
 +}  // namespace dom
 +}  // namespace mozilla
 diff --git a/dom/base/NavigatorManager.h b/dom/base/NavigatorManager.h
@@ -240,7 +302,7 @@ new file mode 100644
 index 0000000000..918d94be04
 --- /dev/null
 +++ b/dom/base/NavigatorManager.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,92 @@
 +/* Camoufox: Per-context navigator property manager */
 +#ifndef mozilla_dom_NavigatorManager_h
 +#define mozilla_dom_NavigatorManager_h
@@ -321,6 +383,9 @@ index 0000000000..918d94be04
 +  static bool GetUserAgent(uint32_t aId, nsAString& aOut) {
 +    return RoverfoxStorageManager::GetString("nav_ua_", aId, aOut);
 +  }
++
++  // appVersion as Firefox derives it from the context's user agent.
++  static bool GetAppVersion(uint32_t aId, nsAString& aOut);
 +
 +  static bool IsUaFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
 +
@@ -525,7 +590,22 @@ index c6f64371f2..b64b00c2fb 100644
  
  #include "ErrorList.h"
  #include "MainThreadUtils.h"
-@@ -156,6 +158,18 @@ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
+@@ -132,6 +134,14 @@ void WorkerNavigator::SetLanguages(const
+ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
+                                     CallerType aCallerType,
+                                     ErrorResult& aRv) const {
++  // Camoufox: per-context appVersion for workers, from the context's user agent
++  {
++    WorkerPrivate* wp = GetCurrentThreadWorkerPrivate();
++    if (wp && mozilla::dom::NavigatorManager::GetAppVersion(
++                  wp->GetOriginAttributes().mUserContextId, aAppVersion)) {
++      return;
++    }
++  }
+   if (auto value = MaskConfig::GetString("navigator.appVersion"))
+     return aAppVersion.Assign(NS_ConvertUTF8toUTF16(value.value()));
+   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+@@ -156,6 +166,18 @@ void WorkerNavigator::GetAppVersion(nsSt
  
  void WorkerNavigator::GetPlatform(nsString& aPlatform, CallerType aCallerType,
                                    ErrorResult& aRv) const {
@@ -544,7 +624,7 @@ index c6f64371f2..b64b00c2fb 100644
    if (auto value = MaskConfig::GetString("navigator.platform"))
      return aPlatform.Assign(NS_ConvertUTF8toUTF16(value.value()));
    WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
-@@ -218,6 +232,18 @@ class GetUserAgentRunnable final : public WorkerMainThreadRunnable {
+@@ -218,6 +240,18 @@ class GetUserAgentRunnable final : publi
  
  void WorkerNavigator::GetUserAgent(nsString& aUserAgent, CallerType aCallerType,
                                     ErrorResult& aRv) const {
@@ -563,7 +643,7 @@ index c6f64371f2..b64b00c2fb 100644
    if (auto value = MaskConfig::GetString("navigator.userAgent"))
      return aUserAgent.Assign(NS_ConvertUTF8toUTF16(value.value()));
    WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
-@@ -231,6 +257,17 @@ void WorkerNavigator::GetUserAgent(nsString& aUserAgent, CallerType aCallerType,
+@@ -231,6 +265,17 @@ void WorkerNavigator::GetUserAgent(nsStr
  }
  
  uint64_t WorkerNavigator::HardwareConcurrency() const {
