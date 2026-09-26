@@ -19,6 +19,7 @@ from .fingerprints import generate_context_fingerprint
 from .utils import (
     async_attach_vd,
     attach_no_viewport_default,
+    browser_ff_version,
     launch_options,
     spoofs_window_dimensions,
 )
@@ -227,12 +228,18 @@ async def AsyncNewContext(
         browser: A Browser instance from AsyncNewBrowser or AsyncCamoufox.
         preset: A specific fingerprint preset dict to use. If None, picks randomly.
         os: Target OS for preset selection ("windows", "macos", "linux").
-        ff_version: Firefox version string for UA patching.
+        ff_version: Firefox version string for UA patching. Defaults to the
+            browser's own (Browser.version).
         webrtc_ip: IPv4 address to spoof for WebRTC ICE candidates.
         proxy: Per-context proxy (Playwright format: {"server": "...", "username": "...", "password": "..."}).
         geolocation: Per-context geolocation ({"latitude": float, "longitude": float}).
         **context_kwargs: Additional Playwright new_context() options.
     """
+    # The identity claims the engine it runs on: left unset, the user agent kept
+    # its corpus's version (Firefox/135.0 on a 152 build), a UA/engine mismatch.
+    if ff_version is None:
+        ff_version = browser_ff_version(browser)
+
     # Auto-derive WebRTC IP and timezone from proxy's exit IP when not explicitly provided
     if proxy and (not webrtc_ip or "timezone_id" not in context_kwargs):
         geo = await _resolve_proxy_geo(proxy)

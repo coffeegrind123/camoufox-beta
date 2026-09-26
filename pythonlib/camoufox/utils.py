@@ -813,6 +813,14 @@ def resolve_verstr(executable_path: Optional[Path] = None) -> str:
     return installed_verstr()
 
 
+def browser_ff_version(browser: Any) -> Optional[str]:
+    """The Firefox major version a running browser reports ("152.0.4-beta.31"
+    -> "152"), for a context identity that must claim the engine it runs on.
+    None when the version is not of that shape."""
+    major = str(getattr(browser, 'version', '') or '').split('.', 1)[0]
+    return major if major.isdigit() else None
+
+
 def launch_options(
     *,
     config: Optional[Dict[str, Any]] = None,
