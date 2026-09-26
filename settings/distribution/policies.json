@@ -78,6 +78,15 @@
           "PostData": ""
         }
       ]
+    },
+    "3rdparty": {
+      "Extensions": {
+        "uBlock0@raymondhill.net": {
+          "advancedSettings": [
+            ["suspendUntilListsAreLoaded", "false"]
+          ]
+        }
+      }
     }
   }
 }

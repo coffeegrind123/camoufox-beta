@@ -2,7 +2,7 @@ diff --git a/browser/base/content/browser-init.js b/browser/base/content/browser
 index 1cfa4b8497..bdf8d7202e 100644
 --- a/browser/base/content/browser-init.js
 +++ b/browser/base/content/browser-init.js
-@@ -3,6 +3,16 @@
+@@ -3,6 +3,17 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
@@ -15,6 +15,7 @@ index 1cfa4b8497..bdf8d7202e 100644
 +  { global: "contextual" }
 +);
 +
++const ADDONS_INSTALLED_PREF = "camoufox.addons.installed";
 +
  let _resolveDelayedStartup;
  var delayedStartupPromise = new Promise(resolve => {
@@ -85,7 +86,7 @@ index 1cfa4b8497..bdf8d7202e 100644
      // Wait until chrome is painted before executing code not critical to making the window visible
      this._boundDelayedStartup = this._delayedStartup.bind(this);
      window.addEventListener("MozAfterPaint", this._boundDelayedStartup);
-@@ -366,9 +417,156 @@ var gBrowserInit = {
+@@ -366,9 +417,162 @@ var gBrowserInit = {
        )?.removeAttribute("key");
      }
  
@@ -135,9 +136,15 @@ index 1cfa4b8497..bdf8d7202e 100644
 +      window.resizeBy(width - innerWidth, height + toolbarTop - innerHeight);
 +    }
 +
-+    // Install addons if specified
++    // Install addons if specified -- once per launch. gBrowserInit runs for
++    // every window, and Juggler opens one per page: installing an installed
++    // temporary addon restarts it, and a request its webRequest listener had
++    // suspended was never resumed, so the navigation hung. The flag is a
++    // default pref, which is never written to prefs.js.
 +    let addonPaths = ChromeUtils.camouGetStringList("addons");
-+    if (addonPaths?.length) {
++    let defaults = Services.prefs.getDefaultBranch("");
++    if (addonPaths?.length && !defaults.getBoolPref(ADDONS_INSTALLED_PREF, false)) {
++      defaults.setBoolPref(ADDONS_INSTALLED_PREF, true);
 +      Promise.all(addonPaths.map(path => this.installTemporaryAddon(path)))
 +        .then(addons => ChromeUtils.camouDebug("Installed " + addons.length + " addon(s)"))
 +        .catch(e => ChromeUtils.camouDebug("Failed to install addons: " + e));

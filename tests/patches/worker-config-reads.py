@@ -29,9 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import resolve_binary  # noqa: E402
 
 RACE_SECONDS = 30
-# Two, not four: four spinning workers saturated a 4-core runner and starved
-# the page's navigation (a harness timeout, not the race). Two still crash the
-# unfixed build (2/2 on 4 pinned cores) and leave the fixed one headroom.
+# Two still crash the unfixed build (2/2 on 4 pinned cores). The CI navigation
+# timeouts once blamed on four workers starving a 4-core runner were uBO:
+# reinstalled per window, and holding requests while it compiled its lists
+# (see ubo-startup.py).
 WORKERS = 2
 # One content process, so every context's prefs land in the workers' process.
 ONE_PROCESS = {"dom.ipc.processCount": 1, "dom.ipc.processCount.webIsolated": 1}

@@ -458,6 +458,7 @@ Below is a list of patches and features implemented in Camoufox.
 - Addons are automatically enabled in Private Browsing mode
 - Addons are automatically pinned to the toolbar
 - Fixes DNS leaks with uBO prefetching
+- uBO does not hold page loads while it compiles its filter lists, which it does on every launch (each launch is a fresh profile); requests in the first seconds after launch are not filtered
 
 ### Python Interface
 
