@@ -338,8 +338,9 @@ async def test_two_browsers_get_different_fingerprints(binary):
     Measured on the whole fingerprint a site computes. The coarse values alone
     can legitimately match -- two real Macs share a UA, a 2560x1440 screen and
     8 cores, and CI pins timezone and language -- so a check on those alone
-    failed whenever two draws landed on a common machine. Fonts, voices, the
-    GPU and the per-identity audio seed together cannot.
+    failed whenever two draws landed on a common machine. Fonts, voices and
+    the GPU together cannot. Audio is the exception by design: it renders
+    stock's value in every launch (tribal rule web-audio-matches-stock).
     """
     from camoufox.async_api import AsyncCamoufox
 
@@ -353,11 +354,11 @@ async def test_two_browsers_get_different_fingerprints(binary):
 
     a, b = await asyncio.gather(one(), one())
     assert "audio" in a and "audio" in b, (a, b)
-    differing = sorted(k for k in a if a.get(k) != b.get(k))
+    differing = sorted(k for k in a if k != "audio" and a.get(k) != b.get(k))
     assert differing, f"two separate browser launches produced an identical fingerprint: {a}"
-    # The audio noise is seeded per identity, so it must differ on its own:
-    # equal hashes would mean the seed stopped reaching the browser.
-    assert a["audio"] != b["audio"], f"both launches rendered audio hash {a['audio']}"
+    # Audio is not noised by default: every stock Firefox renders the same sum,
+    # so two launches must share it. A difference would mean noise came back.
+    assert a["audio"] == b["audio"], f"launches rendered audio {a['audio']} and {b['audio']}"
 
 
 async def test_a_context_survives_its_sibling_browser(binary):
