@@ -34,21 +34,22 @@ from zipfile import ZipFile
 from .exceptions import CorruptedDownload, FpgenModelError
 from .pkgman import rprint, verify_sha256, webdl
 
-# The release fpgen's own fetcher picks today: the API lists model-4/2025 ahead
-# of the newer model-2/2026, and fpgen takes the first zip it sees. Pinning it
-# keeps every generated fingerprint on the corpus the launcher was measured
-# against. Moving to another model is a deliberate change: update both values.
+# model-2/2026, the newest corpus. fpgen's own fetcher never reaches it: the API
+# lists model-4/2025 first (the two tags share a created_at) and fpgen takes the
+# first zip it sees, so unpinned installs generate from April 2025 (newest
+# Firefox 137, no RDNA4). Moving to another model is a deliberate change:
+# update the URL, the archive digest and every member digest below.
 FPGEN_MODEL_URL = (
     "https://github.com/scrapfly/fingerprint-generator/releases/download/"
-    "model-4/2025/model-release.zip"
+    "model-2/2026/model-release.zip"
 )
-FPGEN_MODEL_SHA256 = "5059ccbcd364020f4325c18de0352d78e63852ff5e6fdd6a8eddaa04b55c61d1"
+FPGEN_MODEL_SHA256 = "6530b8322cdaa4ec042921c8d9a0369a0e6e0269ba636c01a7203e4a2f109936"
 
 # The archive's members, as fpgen.pkgman.FILE_PAIRS names their compressed form.
 FPGEN_MODEL_FILES: Dict[str, str] = {
-    "fingerprint-network.json.zst": "d2340d91b72f81e786e88ec5dc56275d020582e8108f1311636a490162fec65d",
-    "values.json.zst": "6f9cbd73d68517a479c2d2369a4c90f67292c1bf7556362a8cc76617562f097d",
-    "values.dat.zst": "07d502512b3c4aefac855094e308322b6daf7c815e3fdf1da91ec6d8d5e1fe63",
+    "fingerprint-network.json.zst": "e1b0a7e60837c347f4b7d5dad4a20c356d521e0593e1bf4a8be39ea1e6a41ac4",
+    "values.json.zst": "294decde5b6a1a52ed53d50a894130fa5c58f7cc804b78198f5c33f55b3ba66f",
+    "values.dat.zst": "3da2cf0891a4a85ef6458f0fbdf9346acfcd04e5fd279a0ea22d7919e4eaf122",
 }
 
 # `python -m fpgen decompress` replaces each .zst with its decompressed file;
@@ -56,8 +57,7 @@ FPGEN_MODEL_FILES: Dict[str, str] = {
 DECOMPRESSED_FILES = ["fingerprint-network.json", "values.json", "values.dat"]
 
 # 2100-01-01T00:00:00Z. fpgen refreshes files whose mtime is more than five
-# weeks in the past; this one never is. It also marks the files as ones this
-# module wrote and verified, which lets later launches skip re-hashing them.
+# weeks in the past; this one never is.
 PINNED_MTIME = 4102444800
 
 # fpgen.pkgman.files_are_recent: older than this and fpgen fetches again.
@@ -86,9 +86,10 @@ def ensure_fpgen_model(data_dir: Optional[Path] = None) -> None:
     Make sure fpgen will find a pinned, current-looking model and fetch nothing.
 
     - No model: download the pinned release, verify it, install it.
-    - The pinned model, stamped by an earlier call: nothing to do.
-    - A model fpgen fetched itself (or an older launcher seeded): kept if its
-      files hash to the pinned ones, then stamped; replaced if they do not.
+    - Files that hash to the pinned ones (installed here, by fpgen itself, or
+      seeded by an image): kept, and stamped if they are not already.
+    - Any other model, including one this module installed under an earlier
+      pin: replaced.
     - A decompressed model: kept and stamped. Its content cannot be checked
       against the archive's hashes, and decompressing is a deliberate act.
     """
@@ -115,8 +116,9 @@ def _ensure(data_dir: Path) -> None:
 
     compressed = [data_dir / name for name in FPGEN_MODEL_FILES]
     if all(p.exists() for p in compressed):
-        if all(_stamped(p) for p in compressed):
-            return
+        # Hashed every time, stamped or not: the stamp only says this module
+        # wrote the file, and a machine that installed the previous pin has
+        # stamped files that must still be replaced (~2 ms for model-2/2026).
         if all(_hash(p) == FPGEN_MODEL_FILES[p.name] for p in compressed):
             _stamp(compressed)
             return

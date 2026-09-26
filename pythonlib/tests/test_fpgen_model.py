@@ -104,14 +104,25 @@ def test_missing_model_is_installed_and_stamped(tmp_path, pinned):
     assert sorted(p.name for p in data_dir.iterdir()) == sorted(MEMBERS)
 
 
-def test_stamped_model_is_not_downloaded_or_rehashed(tmp_path, pinned, monkeypatch):
+def test_stamped_model_is_not_downloaded_again(tmp_path, pinned):
     data_dir = tmp_path / "data"
     ensure_fpgen_model(data_dir)
-    monkeypatch.setattr(fpgen_model, "_hash", lambda path: pytest.fail("re-hashed a stamped file"))
 
     ensure_fpgen_model(data_dir)
 
     assert len(pinned) == 1
+
+
+def test_a_model_stamped_under_an_older_pin_is_replaced(tmp_path, pinned):
+    """Moving the pin must reach machines that installed the previous model:
+    the stamp says "installed by this module", not "the model pinned now"."""
+    data_dir = tmp_path / "data"
+    _write(data_dir, {**MEMBERS, "values.dat.zst": b"the previous pin"}, mtime=PINNED_MTIME)
+
+    ensure_fpgen_model(data_dir)
+
+    assert len(pinned) == 1
+    assert (data_dir / "values.dat.zst").read_bytes() == MEMBERS["values.dat.zst"]
 
 
 def test_stale_pinned_model_is_restamped_not_refetched(tmp_path, pinned):
