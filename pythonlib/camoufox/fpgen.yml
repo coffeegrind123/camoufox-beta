@@ -62,7 +62,9 @@ window:
   # bottom edge land (see BROWSER_CHROME_HEIGHT in coherence.py).
   screenX: window.screenX
   screenY: window.screenY
-  pageYOffset: screen.pageYOffset
+  # pageYOffset is not mapped: the browser returns screen.pageYOffset for
+  # scrollY on every read, so a drawn offset froze the page's scroll position
+  # (3 of 60 Windows draws; stock starts every page at 0 and scrolls).
   # devicePixelRatio is not mapped: any value but 1 is a spoofing tell unless
   # the whole geometry is scaled with it.
 
