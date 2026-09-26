@@ -280,3 +280,17 @@ def test_constants_match_the_installed_fpgen():
 
     source = (fpgen_model.fpgen_data_dir().parent / "pkgman.py").read_text()
     assert "timedelta(weeks=5)" in source, "fpgen changed its refresh window"
+
+
+def test_install_writes_nothing_to_stdout(tmp_path, pinned, capfd):
+    """The install runs inside a caller's launch, whose stdout may be data: the
+    contentaccessible-parity guard parses its probe's stdout as JSON, and the
+    download line in front of it failed the guard on CI (run 36261567701)."""
+    data_dir = tmp_path / "data"
+    _write(data_dir, {**MEMBERS, "values.dat.zst": b"another model"})
+
+    ensure_fpgen_model(data_dir)
+
+    out, err = capfd.readouterr()
+    assert out == ""
+    assert "Downloading fpgen model" in err

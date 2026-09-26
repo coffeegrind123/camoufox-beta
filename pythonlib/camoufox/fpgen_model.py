@@ -32,7 +32,9 @@ from typing import Dict, List, Optional
 from zipfile import ZipFile
 
 from .exceptions import CorruptedDownload, FpgenModelError
-from .pkgman import rprint, verify_sha256, webdl
+from rich.console import Console
+
+from .pkgman import verify_sha256, webdl
 
 # model-2/2026, the newest corpus. fpgen's own fetcher never reaches it: the API
 # lists model-4/2025 first (the two tags share a created_at) and fpgen takes the
@@ -68,6 +70,14 @@ FPGEN_MAX_AGE_S = 5 * 7 * 24 * 3600
 CUSTOM_MODEL_ENV = "FPGEN_MODEL_URL"
 
 _LOCK = Lock()
+
+# The install runs inside a caller's launch, and a caller's stdout may be data
+# (a probe that prints JSON): progress goes to stderr.
+_STDERR = Console(stderr=True)
+
+
+def _say(msg: str, fg: Optional[str] = None) -> None:
+    _STDERR.print(msg, style=f"bold {fg}" if fg else "bold", highlight=False)
 
 
 def fpgen_data_dir() -> Path:
@@ -122,7 +132,7 @@ def _ensure(data_dir: Path) -> None:
         if all(_hash(p) == FPGEN_MODEL_FILES[p.name] for p in compressed):
             _stamp(compressed)
             return
-        rprint(f"fpgen model in {data_dir} is not the pinned release; replacing it.", fg="yellow")
+        _say(f"fpgen model in {data_dir} is not the pinned release; replacing it.", fg="yellow")
         try:
             _install(data_dir)
         except PermissionError:
@@ -130,7 +140,7 @@ def _ensure(data_dir: Path) -> None:
             # no fingerprint at all.
             if not all(_fpgen_considers_current(p) for p in compressed):
                 raise
-            rprint("Cannot replace it (directory not writable); using it as is.", fg="yellow")
+            _say("Cannot replace it (directory not writable); using it as is.", fg="yellow")
         return
 
     _install(data_dir)
@@ -139,7 +149,7 @@ def _ensure(data_dir: Path) -> None:
 def _install(data_dir: Path) -> None:
     # One line, not webdl's per-chunk percentages: this runs inside a launch,
     # whose output usually lands in a log.
-    rprint(f"Downloading fpgen model: {FPGEN_MODEL_URL}")
+    _say(f"Downloading fpgen model: {FPGEN_MODEL_URL}")
     buffer = webdl(FPGEN_MODEL_URL, progress_callback=lambda done, total: None)
     verify_sha256(buffer, FPGEN_MODEL_SHA256, "fpgen model")
 
