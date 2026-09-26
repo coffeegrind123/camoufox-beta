@@ -106,6 +106,7 @@ def check_race(binary, url, failures):
     crashed = []
     errors = []
     created = 0
+    gotos = []
     reads = 0
     with Camoufox(os="windows", headless=True, executable_path=str(binary),
                   firefox_user_prefs=ONE_PROCESS, i_know_what_im_doing=True) as browser:
@@ -121,7 +122,9 @@ def check_race(binary, url, failures):
                 ctx.add_init_script(fp["init_script"])
                 page = ctx.new_page()
                 page.on("crash", lambda _: crashed.append("new context's page"))
+                started = time.monotonic()
                 page.goto(url, timeout=45000)
+                gotos.append(time.monotonic() - started)
                 ctx.close()
                 created += 1
             if not crashed:
@@ -131,8 +134,11 @@ def check_race(binary, url, failures):
             # timeout) is the harness, not the race, and is reported as such.
             first = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
             (crashed if "closed" in first.lower() or "crash" in first.lower() else errors).append(first)
-    print(f"race: {created} contexts in {RACE_SECONDS} s, {reads} worker reads, crashed: {crashed or 'no'}"
-          + (f", harness errors: {errors}" if errors else ""))
+    # A starved machine slows every navigation; a stall shows as fast ones
+    # followed by one that never finishes.
+    slowest = f"{max(gotos):.2f}" if gotos else "-"
+    print(f"race: {created} contexts in {RACE_SECONDS} s (slowest goto {slowest} s), {reads} worker reads,"
+          f" crashed: {crashed or 'no'}" + (f", harness errors: {errors}" if errors else ""))
     if crashed:
         failures.append(f"race: content process crashed after {created} contexts ({crashed[0]})")
     elif errors:
