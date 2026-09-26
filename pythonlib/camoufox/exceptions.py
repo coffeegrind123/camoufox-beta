@@ -208,3 +208,9 @@ class ProfileDirectoryError(RuntimeError):
     """Raised when Camoufox's required runtime directory cannot be prepared."""
 
     ...
+
+
+class FpgenModelError(RuntimeError):
+    """Raised when fpgen's model data cannot be installed where fpgen reads it."""
+
+    ...

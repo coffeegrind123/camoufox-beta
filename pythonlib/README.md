@@ -45,6 +45,8 @@ camoufox fetch
 python3 -m camoufox fetch
 ```
 
+`fetch` also installs fpgen's model data, pinned by sha256, into fpgen's package directory. Run it as that directory's owner when the browser will run as another user (e.g. while building a Docker image); otherwise the first fingerprint generation installs the model.
+
 To uninstall, run `camoufox remove`.
 
 ---
