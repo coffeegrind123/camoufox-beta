@@ -77,52 +77,7 @@ diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
 index 7a974db..9076c70 100644
 --- a/dom/base/nsGlobalWindowInner.cpp
 +++ b/dom/base/nsGlobalWindowInner.cpp
-@@ -3748,18 +3748,38 @@ nsresult nsGlobalWindowInner::GetInnerHeight(double* aHeight) {
- 
- int32_t nsGlobalWindowInner::GetOuterWidth(CallerType aCallerType,
-                                            ErrorResult& aError) {
--  if (auto value = MaskConfig::GetInt32("window.outerWidth"))
--    return value.value();
--  FORWARD_TO_OUTER_OR_THROW(GetOuterWidthOuter, (aCallerType, aError), aError,
-+  // Camoufox: stock's work first, then the spoof (timing parity; see
-+  // nsScreen::PixelDepth).
-+  // Stock throws on an inactive window; so does this.
-+  const int32_t stock = [&]() -> int32_t {
-+    FORWARD_TO_OUTER_OR_THROW(GetOuterWidthOuter, (aCallerType, aError), aError,
-                             0);
-+  }();
-+  if (aError.Failed()) {
-+    return stock;
-+  }
-+  if (auto value = MaskConfig::GetInt32("window.outerWidth")) {
-+    return value.value();
-+  }
-+  return stock;
- }
- 
- int32_t nsGlobalWindowInner::GetOuterHeight(CallerType aCallerType,
-                                             ErrorResult& aError) {
--  if (auto value = MaskConfig::GetInt32("window.outerHeight"))
--    return value.value();
--  FORWARD_TO_OUTER_OR_THROW(GetOuterHeightOuter, (aCallerType, aError), aError,
-+  // Camoufox: stock's work first, then the spoof (timing parity; see
-+  // nsScreen::PixelDepth).
-+  // Stock throws on an inactive window; so does this.
-+  const int32_t stock = [&]() -> int32_t {
-+    FORWARD_TO_OUTER_OR_THROW(GetOuterHeightOuter, (aCallerType, aError), aError,
-                             0);
-+  }();
-+  if (aError.Failed()) {
-+    return stock;
-+  }
-+  if (auto value = MaskConfig::GetInt32("window.outerHeight")) {
-+    return value.value();
-+  }
-+  return stock;
- }
- 
- double nsGlobalWindowInner::ScreenEdgeSlopX() const {
-@@ -3772,14 +3792,36 @@ double nsGlobalWindowInner::ScreenEdgeSlopY() const {
+@@ -3774,14 +3774,36 @@ double nsGlobalWindowInner::ScreenEdgeSl
  
  int32_t nsGlobalWindowInner::GetScreenX(CallerType aCallerType,
                                          ErrorResult& aError) {
