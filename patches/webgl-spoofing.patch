@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000..4f1ff23af4
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.cpp
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,78 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#include "WebGLParamsManager.h"
 +
@@ -33,9 +33,7 @@ index 0000000000..4f1ff23af4
 +}
 +
 +bool WebGLParamsManager::GetVendor(uint32_t aId, nsAString& aOut) {
-+  nsAutoString key;
-+  key.AppendPrintf("webgl_vendor_%u", aId);
-+  return RoverfoxStorageManager::GetString(key, aOut);
++  return RoverfoxStorageManager::GetString("webgl_vendor_", aId, aOut);
 +}
 +
 +void WebGLParamsManager::SetRenderer(uint32_t aId, const nsAString& aValue) {
@@ -45,9 +43,7 @@ index 0000000000..4f1ff23af4
 +}
 +
 +bool WebGLParamsManager::GetRenderer(uint32_t aId, nsAString& aOut) {
-+  nsAutoString key;
-+  key.AppendPrintf("webgl_renderer_%u", aId);
-+  return RoverfoxStorageManager::GetString(key, aOut);
++  return RoverfoxStorageManager::GetString("webgl_renderer_", aId, aOut);
 +}
 +
 +void WebGLParamsManager::DisableVendorFunction(uint32_t aId) {

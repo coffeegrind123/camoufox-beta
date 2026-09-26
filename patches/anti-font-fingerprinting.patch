@@ -179,7 +179,7 @@ new file mode 100644
 index 0000000000..dcb359d25a
 --- /dev/null
 +++ b/dom/base/RoverfoxStorageManager.cpp
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,378 @@
 +#include "RoverfoxStorageManager.h"
 +#include "mozilla/Preferences.h"
 +#include "nsIPrefBranch.h"
@@ -258,31 +258,43 @@ index 0000000000..dcb359d25a
 +  return static_cast<size_t>(h >> 40);
 +}
 +
++// The slot holding (aPrefix, aId) in this thread's memo. aHit is true when it
++// was filled under aGeneration; otherwise the slot is the one to refill.
++template <typename Slot>
++static Slot& FindMemoSlot(Slot (&aMemo)[kMemoSlots], uint32_t& aNextVictim,
++                          const char* aPrefix, uint32_t aId,
++                          uint64_t aGeneration, bool& aHit) {
++  aHit = false;
++  size_t base = MemoIndex(aPrefix, aId);
++  Slot* victim = nullptr;
++  for (size_t way = 0; way < kMemoWays; ++way) {
++    Slot& candidate = aMemo[(base + way) & (kMemoSlots - 1)];
++    if (candidate.prefix == aPrefix && candidate.id == aId) {
++      aHit = candidate.generation == aGeneration;
++      return candidate;
++    }
++    if (!victim && candidate.generation != aGeneration) {
++      victim = &candidate;
++    }
++  }
++  if (!victim) {
++    victim = &aMemo[(base + aNextVictim++ % kMemoWays) & (kMemoSlots - 1)];
++  }
++  return *victim;
++}
++
 +/* static */ RoverfoxStorageManager::MemoSlot
 +RoverfoxStorageManager::ReadMemoized(const char* aPrefix, uint32_t aId) {
 +  // Zero-initialized per thread: generation 0 never matches sGeneration.
 +  static thread_local MemoSlot tMemo[kMemoSlots];
 +  static thread_local uint32_t tNextVictim;
 +  uint64_t generation = sGeneration.load(std::memory_order_acquire);
-+  size_t base = MemoIndex(aPrefix, aId);
-+  MemoSlot* victim = nullptr;
-+  for (size_t way = 0; way < kMemoWays; ++way) {
-+    MemoSlot& candidate = tMemo[(base + way) & (kMemoSlots - 1)];
-+    if (candidate.prefix == aPrefix && candidate.id == aId) {
-+      if (candidate.generation == generation) {
-+        return candidate;
-+      }
-+      victim = &candidate;
-+      break;
-+    }
-+    if (!victim && candidate.generation != generation) {
-+      victim = &candidate;
-+    }
++  bool hit;
++  MemoSlot& slot =
++      FindMemoSlot(tMemo, tNextVictim, aPrefix, aId, generation, hit);
++  if (hit) {
++    return slot;
 +  }
-+  if (!victim) {
-+    victim = &tMemo[(base + tNextVictim++ % kMemoWays) & (kMemoSlots - 1)];
-+  }
-+  MemoSlot& slot = *victim;
 +
 +  nsAutoString key;
 +  key.AssignASCII(aPrefix);
@@ -323,6 +335,50 @@ index 0000000000..dcb359d25a
 +    return false;
 +  }
 +  outValue = slot.boolValue;
++  return true;
++}
++
++// String getters (navigator.platform/userAgent, the timezone, WebGL vendor)
++// get the same memo: each read built a key, took the cache lock and copied the
++// value, and workers reading them in a loop held that lock -- an adaptive
++// pthread mutex, which does not queue waiters -- against the main thread
++// mirroring new contexts' prefs. A hit takes no lock and copies no characters.
++struct StringMemoSlot {
++  const char* prefix = nullptr;
++  uint32_t id = 0;
++  uint64_t generation = 0;
++  bool present = false;
++  // Shares the buffer it was converted into, so a hit copies no characters.
++  nsString value;
++};
++
++/* static */ bool RoverfoxStorageManager::GetString(const char* aPrefix,
++                                                    uint32_t aId,
++                                                    nsAString& outValue) {
++  static thread_local StringMemoSlot tMemo[kMemoSlots];
++  static thread_local uint32_t tNextVictim;
++  uint64_t generation = sGeneration.load(std::memory_order_acquire);
++  bool hit;
++  StringMemoSlot& slot =
++      FindMemoSlot(tMemo, tNextVictim, aPrefix, aId, generation, hit);
++  if (!hit) {
++    nsAutoString key;
++    key.AssignASCII(aPrefix);
++    key.AppendInt(aId);
++    nsAutoCString value;
++    ReadValue(MakePrefName(key), value);
++
++    slot.prefix = aPrefix;
++    slot.id = aId;
++    // As in ReadMemoized: the generation read before the lookup.
++    slot.generation = generation;
++    slot.present = !value.IsEmpty();
++    CopyUTF8toUTF16(value, slot.value);
++  }
++  if (!slot.present) {
++    return false;
++  }
++  outValue = slot.value;
 +  return true;
 +}
 +
@@ -507,7 +563,7 @@ new file mode 100644
 index 0000000000..e6d64378e1
 --- /dev/null
 +++ b/dom/base/RoverfoxStorageManager.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +#ifndef mozilla_dom_RoverfoxStorageManager_h
 +#define mozilla_dom_RoverfoxStorageManager_h
 +
@@ -540,6 +596,7 @@ index 0000000000..e6d64378e1
 +  // literal: its address is part of the memo key.
 +  static bool GetUint(const char* aPrefix, uint32_t aId, uint32_t& outValue);
 +  static bool GetBool(const char* aPrefix, uint32_t aId, bool& outValue);
++  static bool GetString(const char* aPrefix, uint32_t aId, nsAString& outValue);
 +  // A put reached this process's prefs: copy it into the local cache (main
 +  // thread only), which is all a worker thread reads.
 +  static void MirrorPref(const nsACString& aPrefName);

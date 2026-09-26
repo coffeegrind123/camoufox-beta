@@ -240,7 +240,7 @@ new file mode 100644
 index 0000000000..918d94be04
 --- /dev/null
 +++ b/dom/base/NavigatorManager.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,89 @@
 +/* Camoufox: Per-context navigator property manager */
 +#ifndef mozilla_dom_NavigatorManager_h
 +#define mozilla_dom_NavigatorManager_h
@@ -266,9 +266,7 @@ index 0000000000..918d94be04
 +  }
 +
 +  static bool GetPlatform(uint32_t aId, nsAString& aOut) {
-+    nsAutoString key;
-+    key.AppendPrintf("nav_plat_%u", aId);
-+    return RoverfoxStorageManager::GetString(key, aOut);
++    return RoverfoxStorageManager::GetString("nav_plat_", aId, aOut);
 +  }
 +
 +  static bool IsPlatformFunctionEnabledForWebIDL(JSContext* aCx,
@@ -285,9 +283,7 @@ index 0000000000..918d94be04
 +  }
 +
 +  static bool GetOscpu(uint32_t aId, nsAString& aOut) {
-+    nsAutoString key;
-+    key.AppendPrintf("nav_oscpu_%u", aId);
-+    return RoverfoxStorageManager::GetString(key, aOut);
++    return RoverfoxStorageManager::GetString("nav_oscpu_", aId, aOut);
 +  }
 +
 +  static bool IsOscpuFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
@@ -323,9 +319,7 @@ index 0000000000..918d94be04
 +  }
 +
 +  static bool GetUserAgent(uint32_t aId, nsAString& aOut) {
-+    nsAutoString key;
-+    key.AppendPrintf("nav_ua_%u", aId);
-+    return RoverfoxStorageManager::GetString(key, aOut);
++    return RoverfoxStorageManager::GetString("nav_ua_", aId, aOut);
 +  }
 +
 +  static bool IsUaFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
