@@ -31,9 +31,20 @@ from .sample import _filtered_extensions
 _RFP_RENDERER = 'Mozilla'
 
 
+def _ensure_model() -> None:
+    # Before fpgen is first imported: without the pinned model it fetches one
+    # itself and takes model-4/2025 (see fpgen_model.py), whose WebGL records
+    # have no vendor or renderer. A preset or webgl_config launch reaches fpgen
+    # here before fingerprints._generator() has installed the pinned model.
+    from ..fpgen_model import ensure_fpgen_model
+
+    ensure_fpgen_model()
+
+
 @lru_cache(maxsize=None)
 def _lookup_index(node: str) -> Dict[str, str]:
     """fpgen's lookup index for every value of `node`, keyed by its JSON."""
+    _ensure_model()
     from fpgen.utils import _lookup_possibilities
 
     return _lookup_possibilities(node, casefold=False)
@@ -53,6 +64,7 @@ def _pin(node: str, value: Any) -> Tuple[str, str]:
 @lru_cache(maxsize=None)
 def _trace(target: str, target_os: str, pinned: Tuple[Tuple[str, str], ...] = ()) -> Tuple[Any, ...]:
     """fpgen's distribution of `target` for Firefox on `target_os`, in its order."""
+    _ensure_model()
     import fpgen
 
     return tuple(

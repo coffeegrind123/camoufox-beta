@@ -1475,7 +1475,13 @@ def webgl_for_gpu(
     if (vendor, renderer) in _recorded_gpus(target_os):
         from camoufox.webgl import recorded
 
-        return recorded.webgl_for_gpu(target_os, vendor, renderer, seed)
+        # A model can list the GPU and still fail to describe it: model-4/2025,
+        # which fpgen fetches itself when `camoufox fetch` has not installed the
+        # pinned model, has WebGL records without vendor or renderer.
+        try:
+            return recorded.webgl_for_gpu(target_os, vendor, renderer, seed)
+        except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
+            _fpgen_webgl_failed(error)
     return sample_webgl(target_os, vendor, renderer, seed=seed)
 
 

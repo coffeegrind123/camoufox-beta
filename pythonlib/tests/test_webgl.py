@@ -1,5 +1,6 @@
 """WebGL identities: fpgen's recorded Firefox devices first, webgl_data.db behind them."""
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -207,6 +208,33 @@ def test_fpgen_that_cannot_answer_falls_back_to_the_database(monkeypatch):
     assert config["webGl:parameters"] == sample_webgl("win", *nvidia)["webGl:parameters"]
 
 
+def test_model_whose_webgl_records_lack_vendor_falls_back_to_the_database(monkeypatch):
+    # model-4/2025's shape, which fpgen fetches by itself when `camoufox fetch`
+    # has not installed the pinned model (CI's patch-guard job, 2026-09-27):
+    # its GPU list answers, then every webgl record lacks vendor and renderer.
+    real_trace = recorded._trace
+
+    def model_4(target, *args, **kwargs):
+        results = real_trace(target, *args, **kwargs)
+        if target == "gpu":
+            return results
+        return tuple(
+            dataclasses.replace(r, value={k: v for k, v in r.value.items() if k not in ("vendor", "renderer")})
+            if isinstance(r.value, dict) else r
+            for r in results
+        )
+
+    monkeypatch.setattr(recorded, "_trace", model_4)
+    nvidia = ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar")
+    assert nvidia in recorded.firefox_gpus("win")
+    with pytest.warns(RuntimeWarning, match="falling back to webgl_data.db"):
+        config = webgl_for_gpu("win", *nvidia, seed=3)
+    assert config["webGl:parameters"] == sample_webgl("win", *nvidia)["webGl:parameters"]
+    with pytest.warns(RuntimeWarning, match="falling back to webgl_data.db"):
+        config = sample_webgl_for_screen("win", 1920, 1080, seed=3)
+    assert (config["webGl:vendor"], config["webGl:renderer"]) in database_gpus("win")
+
+
 # -- extensions ---------------------------------------------------------------
 
 
@@ -239,3 +267,22 @@ def test_draft_extensions_filtered_on_every_os():
         config = recorded.to_config(device, webgl2, target_os)
         assert config["webGl:supportedExtensions"] == ["ANGLE_instanced_arrays"]
         assert config["webGl2:supportedExtensions"] == (["OVR_multiview2"] if target_os == "win" else [])
+
+
+@pytest.mark.parametrize("node", ["gpu", "webgl"])
+def test_recorded_installs_the_pinned_model_before_using_fpgen(monkeypatch, node):
+    # Imported without it, fpgen fetches a model itself and takes model-4/2025
+    # (fpgen_model.py), whose WebGL records lack vendor/renderer. A preset or
+    # webgl_config launch reaches fpgen here first, before _generator() would
+    # have installed the pinned model (CI's patch-guard job, 2026-09-27).
+    from camoufox import fpgen_model
+
+    calls = []
+    monkeypatch.setattr(fpgen_model, "ensure_fpgen_model", lambda *a, **kw: calls.append(node))
+    recorded._trace.cache_clear()
+    recorded._lookup_index.cache_clear()
+    if node == "gpu":
+        recorded._trace("gpu", "win")
+    else:
+        recorded._lookup_index("webgl")
+    assert calls == [node]
