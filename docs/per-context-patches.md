@@ -630,9 +630,9 @@ The Camoufox Python package (`pythonlib/`) generates fingerprints for both `NewB
 
 **Recommended for v149+ binaries:** opt into bundled real fingerprints via
 `fingerprint_preset=True`. The library auto-selects the v150 preset bundle
-(`fingerprint-presets-v150.json`, 312 real fingerprints scraped from v149–v152
+(`fingerprint-presets-v150.json`, 273 real fingerprints scraped from v149–v152
 browsers) for any binary at Firefox ≥ 149, and falls back to the original
-bundle (`fingerprint-presets.json`, 123 presets) for older binaries. UA strings
+bundle (`fingerprint-presets.json`, 105 presets) for older binaries. UA strings
 are rewritten to match the active binary's Firefox version, so opting in costs
 nothing for compatibility.
 
@@ -659,7 +659,7 @@ bundles are shipped in the wheel.
 |----------|--------|-------|
 | UA, platform, HWC, oscpu | fpgen or preset | UA version patched to match Camoufox Firefox version |
 | Screen dims, colorDepth | fpgen or preset | Viewport adjusted by -28px for browser chrome |
-| WebGL vendor/renderer | `sample_webgl()` from `webgl_data.db` | OS-weighted probability sampling. The generator's own GPU fields are not mapped in `fpgen.yml` yet, so both paths call `sample_webgl()` for WebGL. fpgen does carry a full WebGL set (999 renderers against webgl_data.db's 33) -- wiring it through is the follow-up. |
+| WebGL vendor/renderer | Preset, or `sample_webgl_for_screen()` in `fingerprints.py` | A generated identity draws a GPU from fpgen's recorded Firefox devices (`camoufox/webgl/recorded.py`), weighted by its share of Firefox on the OS, never a software rasteriser or a discrete GPU behind a netbook screen. `launch_options()` adds that GPU's recorded parameters, extensions and shader precisions (`webgl_for_gpu()`), WebGL2 from the same device as WebGL1. `webgl_data.db` (`sample_webgl()`) answers for a GPU fpgen has not recorded, and when fpgen cannot answer at all. |
 | Font list | `_generate_random_font_subset()` | Random 30-78% of OS fonts. Essential + marker fonts always included. NOT from presets — generated fresh per call. |
 | Font spacing seed | `randint(1, 2^32-1)` | Excludes 0 (0 = no-op in C++) |
 | Audio seed | `randint(1, 2^32-1)` | Excludes 0 |
@@ -683,12 +683,12 @@ bundles are shipped in the wheel.
 - `launch_options()` — builds CAMOU_CONFIG env var, Playwright args, and Firefox prefs
 - Font subset generated via same `_generate_random_font_subset()` function
 - Voice subset generated via same `_generate_random_voice_subset()` function
-- WebGL sampled via same `sample_webgl()` function
+- WebGL drawn via the same `sample_webgl_for_screen()` / `webgl_for_gpu()` functions
 - Config validated against `properties.json` before serialization
 
-**`fingerprint-presets.json`** — Original bundled real fingerprints organized by OS (macOS 30, Windows 75, Linux 18). Each preset includes navigator properties, screen dimensions, WebGL params, and speech voices. Used for Firefox < 149 binaries. Font and voice data not used from presets — generated fresh per launch.
+**`fingerprint-presets.json`** — Original bundled real fingerprints organized by OS (macOS 16, Windows 72, Linux 17). Each preset includes navigator properties, screen dimensions, the WebGL vendor/renderer, and speech voices. Used for Firefox < 149 binaries. Font and voice data not used from presets — generated fresh per launch.
 
-**`fingerprint-presets-v150.json`** — Newer bundle covering Firefox v149–v152 (macOS 67, Windows 180, Linux 65; 312 total). Same schema as the original. Auto-selected by `load_presets()` when the active binary reports Firefox ≥ 149.
+**`fingerprint-presets-v150.json`** — Newer bundle covering Firefox v149–v152 (macOS 43, Windows 171, Linux 59; 273 total). Same schema as the original. Auto-selected by `load_presets()` when the active binary reports Firefox ≥ 149.
 
 **`fonts.json`** — Complete OS-specific font lists for random font subset generation.
 

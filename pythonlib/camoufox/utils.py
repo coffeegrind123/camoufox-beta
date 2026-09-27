@@ -21,7 +21,7 @@ from .exceptions import (
     InvalidPropertyType,
     NonFirefoxFingerprint,
 )
-from .fingerprints import Screen, from_fpgen, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset, fix_navigator_arch, fix_hardware_concurrency, identity_salt, identity_seed, fix_screen_no_taskbar, clamp_screen_to_display, clamp_window_dimensions, clamp_window_position, raise_screen_to_modern_floor, sample_webgl_for_screen, set_media_devices_defaults, WINDOWS_11_MARKER_FONTS
+from .fingerprints import Screen, from_fpgen, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset, fix_navigator_arch, fix_hardware_concurrency, identity_salt, identity_seed, fix_screen_no_taskbar, clamp_screen_to_display, clamp_window_dimensions, clamp_window_position, raise_screen_to_modern_floor, sample_webgl_for_screen, set_media_devices_defaults, webgl_for_gpu, WINDOWS_11_MARKER_FONTS
 from . import coherence
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
@@ -40,7 +40,6 @@ from .pkgman import (
 )
 from .virtdisplay import VirtualDisplay
 from ._warnings import LeakWarning
-from .webgl import sample_webgl
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
 
@@ -947,6 +946,8 @@ def launch_options(
             which is equally coherent, just less diverse.
         webgl_config (Optional[Tuple[str, str]]):
             Use a specific WebGL vendor/renderer pair. Passed as a tuple of (vendor, renderer).
+            The pair must be one fpgen has recorded from Firefox on `os`, or a
+            webgl_data.db row for it (fingerprints.webgl_gpus); any other raises ValueError.
         **launch_options (Dict[str, Any]):
             Additional Firefox launch options.
     """
@@ -1562,19 +1563,18 @@ def launch_options(
     else:
         # If the user has provided a specific WebGL vendor/renderer pair, use it
         if webgl_config:
-            webgl_fp = sample_webgl(target_os, *webgl_config, seed=identity_seed(config, _identity_salt))
+            webgl_fp = webgl_for_gpu(target_os, *webgl_config, seed=identity_seed(config, _identity_salt))
         elif config.get('webGl:vendor') and config.get('webGl:renderer'):
-            # Preset already set vendor/renderer — sample matching WebGL params
+            # Preset already set vendor/renderer: that GPU's recorded parameters
             try:
-                webgl_fp = sample_webgl(target_os, config['webGl:vendor'], config['webGl:renderer'], seed=identity_seed(config, _identity_salt))
+                webgl_fp = webgl_for_gpu(target_os, config['webGl:vendor'], config['webGl:renderer'], seed=identity_seed(config, _identity_salt))
             except ValueError:
-                # The pair is not in webgl_data.db, which holds 33 GPUs. 39 of the
-                # 435 bundled presets name one it does not have -- including rows
-                # that cannot be the OS they are filed under, e.g. a Windows
+                # Neither fpgen nor webgl_data.db has the pair. No bundled preset
+                # lands here (test_shipped_data holds each to webgl_gpus), but a
+                # caller's own preset dict can name anything -- e.g. a Windows
                 # preset claiming "ANGLE (Unknown, Adreno (TM) 650 ...)", a phone
-                # GPU. Raising here made launch_options() fail outright for ~9% of
-                # presets, and a caller passing their own preset dict had no way
-                # to know which pairs are supported.
+                # GPU -- and raising would fail launch_options() over a pair the
+                # caller had no way to check.
                 #
                 # There is no way to keep the named GPU: the parameters, extension
                 # list and shader precisions all have to come from a real recorded
@@ -1618,7 +1618,7 @@ def launch_options(
     # Every identity passes the whole-identity checks, whatever built it: a
     # generated fingerprint, a bundled preset, or a config the caller wrote.
     # The pools are sampled independently -- navigator and screen from the
-    # generator, GPU from webgl_data.db, fonts and voices from their own
+    # generator, GPU from fpgen's WebGL records, fonts and voices from their own
     # catalogues -- so a machine that never existed can be assembled from parts
     # that are each fine on their own. See coherence.py.
     _incoherent = coherence.apply(config, target_os)

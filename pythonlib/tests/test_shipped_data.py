@@ -10,6 +10,12 @@ Dropped on 2026-09-17: 38 of 435 presets (26 with a GPU their OS cannot report,
 7 pairing Apple Silicon with a core count Apple never shipped, 4 with a colour
 depth their GPU contradicts, 3 with a phone viewport, 1 claiming 40 touch
 points), and 2 impossible macOS weights in webgl_data.db.
+
+Dropped on 2026-09-27: 19 of 397 presets whose GPU neither fpgen's recorded
+devices nor webgl_data.db has WebGL data for on that OS (Direct3D 10-level
+"vs_4_0" parts, Windows on ARM, "Generic Renderer", 945GM and GTX 480 on macOS,
+8800 GTX / HD 400 / HD 5850 / GTX 480 on Linux). A launch replaced each one's
+GPU wholesale.
 """
 
 import json
@@ -74,3 +80,21 @@ def test_each_os_still_has_gpus_to_draw_from():
             assert count >= 2, f"{os_key} has {count} GPU(s) left"
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("filename", PRESET_FILES)
+def test_every_preset_gpu_has_webgl_data(filename):
+    """A preset records only its GPU's name; the parameters, extensions and
+    shader precisions behind it come from fpgen's recorded devices or
+    webgl_data.db. With neither, a launch swaps in another GPU entirely."""
+    from camoufox.fingerprints import webgl_gpus
+
+    presets = json.loads((DATA / filename).read_text())["presets"]
+    for os_name, entries in presets.items():
+        known = webgl_gpus(os_name)
+        for index, preset in enumerate(entries):
+            gpu = (preset["webgl"]["unmaskedVendor"], preset["webgl"]["unmaskedRenderer"])
+            assert gpu in known, (
+                f"{filename} {os_name}[{index}]: {gpu[1]!r} has no WebGL data"
+                " -- run scripts/clean-fingerprint-data.py --write"
+            )

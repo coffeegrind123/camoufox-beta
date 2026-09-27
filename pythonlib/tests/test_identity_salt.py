@@ -84,11 +84,10 @@ class TestPinnedIdentityIsStable:
     def test_every_bundled_preset_launches(self, os_name):
         # The test above draws ONE preset at random, so a preset that cannot
         # launch shows up as a 1-in-11 flake rather than a failure -- which is
-        # how it reached CI. 39 of the 435 bundled presets name a GPU that is
-        # not among the 33 in webgl_data.db, and sample_webgl raises for those.
-        # Every preset has to produce launch options; see the fallback in
-        # utils.launch_options.
-        from camoufox.webgl import sample_webgl
+        # how it reached CI, when 39 bundled presets named a GPU the WebGL
+        # source did not have. Every preset has to produce launch options; see
+        # the fallback in utils.launch_options.
+        from camoufox.fingerprints import webgl_for_gpu
 
         presets = fp.load_presets("150")["presets"][os_name]
         key = {"windows": "win", "macos": "mac", "linux": "lin"}[os_name]
@@ -99,7 +98,7 @@ class TestPinnedIdentityIsStable:
             # merge_into does not overwrite, so a fallback that forgets to drop
             # the preset's pair leaves one device's name on another's data.
             assert config.get("webGl:parameters"), (os_name, i)
-            sample_webgl(key, config["webGl:vendor"], config["webGl:renderer"])
+            webgl_for_gpu(key, config["webGl:vendor"], config["webGl:renderer"])
 
     def test_caller_seeds_are_kept(self):
         config = launch(config={"canvas:seed": 7, "audio:seed": 9})

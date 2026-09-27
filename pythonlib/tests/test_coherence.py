@@ -1,7 +1,7 @@
 """Every identity Camoufox can produce has to be a machine that could exist.
 
 The pools are sampled independently -- navigator and screen from fpgen, the GPU
-from webgl_data.db, fonts and voices from their own catalogues -- so an
+from fpgen's WebGL records, fonts and voices from their own catalogues -- so an
 incoherent identity is assembled rather than inherited, and cleaning the pools
 cannot prevent it. These tests run the assembled identity, from every source, past
 camoufox.coherence.

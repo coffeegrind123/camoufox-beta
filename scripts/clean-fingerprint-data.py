@@ -11,7 +11,10 @@ never existed.
 What it covers:
 
   fingerprint-presets.json, fingerprint-presets-v150.json
-      Each preset is converted the way a launch converts it and checked. A row
+      Each preset is converted the way a launch converts it and checked, and
+      its GPU must be one Camoufox has WebGL data for on that OS (fpgen's
+      recorded Firefox devices or a webgl_data.db row): a preset records only
+      the GPU's name, and a launch would otherwise swap in another GPU. A row
       that fails is dropped rather than repaired: repairing would write an
       invented value ("what core count does a 2-core Apple M1 really have?")
       into a file whose entire purpose is being real.
@@ -42,7 +45,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'pythonlib'))
 
 from camoufox import coherence  # noqa: E402
-from camoufox.fingerprints import from_preset  # noqa: E402
+from camoufox.fingerprints import from_preset, webgl_gpus  # noqa: E402
 
 PRESET_FILES = (
     REPO / 'pythonlib' / 'camoufox' / 'fingerprint-presets.json',
@@ -60,7 +63,13 @@ def preset_violations(preset, os_name):
         config = from_preset(preset, FF_VERSION)
     except Exception as exc:  # a row too malformed to convert is itself a defect
         return [coherence.Violation('unconvertible', f'{type(exc).__name__}: {exc}')]
-    return coherence.validate(config, OS_KEY[os_name])
+    violations = coherence.validate(config, OS_KEY[os_name])
+    webgl = preset.get('webgl', {})
+    gpu = (webgl.get('unmaskedVendor'), webgl.get('unmaskedRenderer'))
+    if gpu not in webgl_gpus(os_name):
+        violations.append(coherence.Violation(
+            'gpu-without-webgl-data', f'no WebGL data for {gpu[1]!r} on {os_name}'))
+    return violations
 
 
 def clean_presets(path, write):

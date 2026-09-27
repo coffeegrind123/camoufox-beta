@@ -1,9 +1,10 @@
 """Whole-identity coherence: the checks that look at more than one field.
 
 Camoufox assembles an identity from several pools -- the navigator and screen
-from the fingerprint generator, the GPU from `webgl_data.db`, fonts and voices
-from its own catalogues, media devices from `media-devices.json`. Each pool is
-sampled on its own, so a combination that no machine has ever had can be built
+from the fingerprint generator, the GPU from fpgen's recorded WebGL devices
+(`webgl_data.db` behind them), fonts and voices from its own catalogues, media
+devices from `media-devices.json`. Each pool is sampled on its own, so a
+combination that no machine has ever had can be built
 out of individually plausible parts: an Apple M1 with 2 cores, a Mac reporting a
 Braswell Atom GPU, a Linux identity whose platform says armv81 while its user
 agent says x86_64.
@@ -133,7 +134,7 @@ def _repair_apple_silicon_cores(config: Dict[str, Any], target_os: str) -> None:
 def gpu_fits_os(renderer: Optional[str], target_os: str) -> bool:
     """Whether this renderer string is one the OS can report.
 
-    Used both to check a finished identity and to filter `webgl_data.db` before
+    Used both to check a finished identity and to filter the WebGL sources before
     sampling, so the two can never disagree about what a Mac may claim.
     """
     renderer = str(renderer or '')

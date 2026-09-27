@@ -1,6 +1,6 @@
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
 import orjson
@@ -52,6 +52,20 @@ def _load_webgl_data(data_str: str, os: str) -> Dict[str, str]:
         if isinstance(exts, list):
             data[key] = [e for e in exts if e not in blocked]
     return data
+
+
+def database_gpus(os: str) -> FrozenSet[Tuple[str, str]]:
+    """Every (vendor, renderer) pair webgl_data.db can serve for this OS."""
+    if os not in OS_ARCH_MATRIX:
+        raise ValueError(f'Invalid OS: {os}. Must be one of: win, mac, lin')
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            f'SELECT vendor, renderer FROM webgl_fingerprints WHERE {os} > 0'  # nosec
+        ).fetchall()
+    finally:
+        conn.close()
+    return frozenset(rows)
 
 
 def sample_webgl(

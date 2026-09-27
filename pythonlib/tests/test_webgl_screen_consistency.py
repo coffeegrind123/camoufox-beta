@@ -28,6 +28,7 @@ from camoufox import fingerprints  # noqa: E402
 from camoufox.fingerprints import (  # noqa: E402
     MODERN_SCREEN_FLOOR,
     _renderer_bucket,
+    _sample_db_webgl_for_screen,
     gpu_screen_is_plausible,
     is_software_renderer,
     raise_screen_to_modern_floor,
@@ -161,11 +162,11 @@ def test_software_first_draw_is_resampled_to_hardware(monkeypatch):
     draws = iter([{"webGl:renderer": _LLVMPIPE}, {"webGl:renderer": _INTEL}])
     monkeypatch.setattr(fingerprints, "sample_webgl", lambda *a, **kw: next(draws))
 
-    assert sample_webgl_for_screen("lin", 1024, 600)["webGl:renderer"] == _INTEL
+    assert _sample_db_webgl_for_screen("lin", 1024, 600)["webGl:renderer"] == _INTEL
 
     only_software = iter([{"webGl:renderer": _LLVMPIPE}] * 40)
     monkeypatch.setattr(fingerprints, "sample_webgl", lambda *a, **kw: next(only_software))
-    assert sample_webgl_for_screen("lin", 1920, 1080)["webGl:renderer"] == _LLVMPIPE
+    assert _sample_db_webgl_for_screen("lin", 1920, 1080)["webGl:renderer"] == _LLVMPIPE
 
 
 def test_software_draws_are_skipped_when_resampling(monkeypatch):
@@ -181,14 +182,14 @@ def test_software_draws_are_skipped_when_resampling(monkeypatch):
     )
     monkeypatch.setattr(fingerprints, "sample_webgl", lambda *a, **kw: next(draws))
 
-    assert sample_webgl_for_screen("lin", 1024, 600)["webGl:renderer"] == _INTEL
+    assert _sample_db_webgl_for_screen("lin", 1024, 600)["webGl:renderer"] == _INTEL
 
 
 def test_falls_back_to_the_first_draw_when_nothing_is_coherent(monkeypatch):
     monkeypatch.setattr(
         fingerprints, "sample_webgl", lambda *a, **kw: {"webGl:renderer": _NV_ANGLE}
     )
-    fp = sample_webgl_for_screen("win", 800, 600, attempts=4)
+    fp = _sample_db_webgl_for_screen("win", 800, 600, attempts=4)
     assert fp["webGl:renderer"] == _NV_ANGLE
 
 
@@ -202,15 +203,16 @@ def test_a_plausible_first_draw_costs_one_query(monkeypatch):
         return {"webGl:renderer": _NV_ANGLE}
 
     monkeypatch.setattr(fingerprints, "sample_webgl", _counted)
-    sample_webgl_for_screen("win", 1920, 1080)
+    _sample_db_webgl_for_screen("win", 1920, 1080)
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("sample", [sample_webgl_for_screen, _sample_db_webgl_for_screen])
 @pytest.mark.parametrize("target_os", ["win", "mac", "lin"])
-def test_sampled_gpu_is_coherent_with_the_screen(target_os):
-    # Against the real webgl_data.db pool.
+def test_sampled_gpu_is_coherent_with_the_screen(target_os, sample):
+    # Against the real pools: fpgen's recorded devices, and webgl_data.db behind them.
     for _ in range(25):
-        fp = sample_webgl_for_screen(target_os, 1280, 800)
+        fp = sample(target_os, 1280, 800)
         assert gpu_screen_is_plausible(fp.get("webGl:renderer"), 1280, 800)
 
 

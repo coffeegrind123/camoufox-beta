@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import unicodedata
+import warnings
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from random import Random, choice, randint, randrange
@@ -1270,8 +1271,8 @@ def draw_media_devices(os_key: str, seed: Optional[int]) -> Dict[str, Any]:
 
 # -- WebGL <-> screen coherence (#729) ---------------------------------------
 #
-# BrowserForge picks navigator/screen; the GPU is drawn separately from
-# webgl_data.db weighted only by OS. Nothing ties the two together, so the
+# fpgen picks navigator/screen; the GPU is drawn separately, weighted only by
+# OS (see sample_webgl_for_screen). Nothing ties the two together, so the
 # synthetic path can emit pairs no real machine ships -- a discrete GPU behind
 # a 1024x600 netbook panel. Consistency checks (Pixelscan, Fingerprint.com)
 # read that as masking even when every individual value is plausible alone.
@@ -1309,8 +1310,8 @@ _SOFTWARE_RENDERERS: Tuple[str, ...] = (
     'Generic Renderer',
 )
 
-# Discrete NVIDIA, plus the AMD R5/R7/R9/RX/Vega bucket. Everything else in
-# webgl_data.db reaches down into netbook territory and gets no floor at all:
+# Discrete NVIDIA, plus the AMD R5/R7/R9/RX/Vega bucket. Every other GPU
+# Firefox reports reaches down into netbook territory and gets no floor at all:
 # the "Intel(R) HD Graphics" bucket swallows the GMA 3150 netbook chipset,
 # "Radeon HD 3200 Graphics" is Gecko's catch-all for a bare "AMD"/"Radeon"
 # (the C-50/E-350 netbook APUs included), and Apple silicon drives arbitrary
@@ -1422,14 +1423,93 @@ def gpu_screen_is_plausible(
     return width * height > _NETBOOK_MAX_PIXELS
 
 
+# -- WebGL sources: fpgen's recorded devices, webgl_data.db behind them -------
+#
+# fpgen records 1-4 real Firefox devices per GPU and weights GPUs by their
+# share of Firefox on each OS; webgl_data.db has one row per GPU string, and
+# 2-5% of its weight is strings Firefox 152 never reports with default prefs
+# (SanitizeRenderer.cpp returns "<bucket>, or similar" or "Generic Renderer";
+# the rows have no ", or similar"). fpgen comes first. The database stays behind it so a webgl_config
+# pair or preset GPU fpgen has not recorded (the Direct3D 10-level "vs_4_x"
+# rows among them) still resolves as before, and so an fpgen model that cannot
+# answer -- model-4/2025's WebGL records carry no vendor or renderer -- degrades
+# to the database instead of failing the launch.
+
+
+def _fpgen_webgl_failed(error: Exception) -> None:
+    warnings.warn(
+        f"fpgen could not draw WebGL ({type(error).__name__}: {error}); "
+        "falling back to webgl_data.db.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _recorded_gpus(target_os: str) -> FrozenSet[Tuple[str, str]]:
+    # Not at the top: camoufox.webgl.recorded imports this module.
+    from camoufox.webgl import recorded
+
+    try:
+        return recorded.firefox_gpus(target_os)
+    except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
+        _fpgen_webgl_failed(error)
+        return frozenset()
+
+
+def webgl_gpus(os_name: str) -> FrozenSet[Tuple[str, str]]:
+    """Every (vendor, renderer) Camoufox has WebGL data for on this OS."""
+    from camoufox.webgl.sample import database_gpus
+
+    os_key = {'macos': 'mac', 'windows': 'win', 'linux': 'lin'}.get(os_name, os_name)
+    return _recorded_gpus(os_key) | database_gpus(os_key)
+
+
+def webgl_for_gpu(
+    target_os: str, vendor: str, renderer: str, seed: Optional[int] = None
+) -> Dict[str, Any]:
+    """The WebGL config of a device with this GPU, as Firefox on `target_os` reports it.
+
+    One of fpgen's recorded devices when it has the GPU, else webgl_data.db's
+    row. Raises ValueError when neither has it.
+    """
+    if (vendor, renderer) in _recorded_gpus(target_os):
+        from camoufox.webgl import recorded
+
+        return recorded.webgl_for_gpu(target_os, vendor, renderer, seed)
+    return sample_webgl(target_os, vendor, renderer, seed=seed)
+
+
 def sample_webgl_for_screen(
     target_os: str,
     width: Optional[int] = None,
     height: Optional[int] = None,
     attempts: int = 32,
     seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Draw a GPU that fits the screen already chosen, and its WebGL config.
+
+    From fpgen's recorded devices (camoufox.webgl.recorded), which never
+    offers a software rasteriser, a GPU the OS cannot report or a discrete GPU
+    behind a netbook panel. From webgl_data.db only if fpgen cannot answer;
+    `attempts` bounds that path's rejection sampling.
+    """
+    from camoufox.webgl import recorded
+
+    try:
+        return recorded.sample_webgl_for_screen(target_os, width, height, seed)
+    except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
+        _fpgen_webgl_failed(error)
+    return _sample_db_webgl_for_screen(target_os, width, height, attempts, seed)
+
+
+def _sample_db_webgl_for_screen(
+    target_os: str,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    attempts: int = 32,
+    seed: Optional[int] = None,
 ) -> Dict[str, str]:
-    """Sample a WebGL profile that is coherent with the screen already chosen.
+    """Sample a webgl_data.db profile that is coherent with the screen already chosen.
 
     Rejection sampling, so the GPU keeps webgl_data.db's real OS-weighted
     distribution -- we only drop draws that contradict the screen. The screen
