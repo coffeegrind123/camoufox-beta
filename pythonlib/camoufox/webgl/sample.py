@@ -131,12 +131,8 @@ def sample_webgl(
     if not results:
         raise ValueError(f'No WebGL data found for OS: {os}')
 
-    # Drop pairs this OS cannot report before sampling. webgl_data.db weights
-    # each pair per OS, and its macOS column carries a Braswell Atom IGP
-    # ("Intel(R) HD Graphics 400") at 7.4% and a desktop PC card ("Radeon R9 200
-    # Series") at 3.7% -- neither shipped in any Mac, so ~11% of macOS
-    # identities were drawing a GPU that would contradict the rest of the
-    # identity the moment a page read the renderer string beside the platform.
+    # Drop pairs this OS cannot report before sampling (an ANGLE string on
+    # macOS, say), so a refreshed database cannot put one back in the draw.
     # Filtering here rather than repairing later keeps reported and sampled
     # WebGL parameters from the same recorded device.
     from ..coherence import gpu_fits_os

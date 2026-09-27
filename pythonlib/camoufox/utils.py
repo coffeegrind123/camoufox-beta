@@ -1124,9 +1124,6 @@ def launch_options(
         if device_scale != 1.0:
             firefox_user_prefs['layout.css.devPixelsPerPx'] = f'{device_scale:g}'
 
-    # Drop values the source supplied that this identity cannot keep, before the
-    # pools below defer to them (a preset's own GPU pair wins over sampling).
-    coherence.drop_incoherent_source_values(config, target_os)
     # A preset whose screen is a phone viewport is not a real desktop device;
     # the floor is normally skipped for presets, on the assumption that a preset
     # IS a real machine, which 736x414 disproves.
@@ -1556,6 +1553,13 @@ def launch_options(
         LeakWarning.warn('disable_coop', i_know_what_im_doing)
         firefox_user_prefs['browser.tabs.remote.useCrossOriginOpenerPolicy'] = False
 
+    # Drop values the source supplied that this identity cannot keep, before the
+    # WebGL pool below defers to them (a preset's own GPU pair wins over
+    # sampling). Here rather than earlier because the check reads the core count
+    # and the screen, and both are replaced above: a preset's cores by the
+    # host's, its screen by the display clamp.
+    coherence.drop_incoherent_source_values(config, target_os)
+
     # Allow allow_webgl parameter for backwards compatibility
     if block_webgl or launch_options.pop('allow_webgl', True) is False:
         firefox_user_prefs['webgl.disabled'] = True
@@ -1585,6 +1589,7 @@ def launch_options(
                 webgl_fp = sample_webgl_for_screen(
                     target_os, config.get('screen.width'), config.get('screen.height'),
                     seed=identity_seed(config, _identity_salt),
+                    cores=config.get('navigator.hardwareConcurrency'),
                 )
                 # merge_into does not overwrite keys that are already set, and the
                 # preset set these two. Drop them, or the page would read the
@@ -1601,6 +1606,7 @@ def launch_options(
             webgl_fp = sample_webgl_for_screen(
                 target_os, config.get('screen.width'), config.get('screen.height'),
                 seed=identity_seed(config, _identity_salt),
+                cores=config.get('navigator.hardwareConcurrency'),
             )
         enable_webgl2 = webgl_fp.pop('webGl2Enabled')
 

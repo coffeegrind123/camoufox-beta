@@ -16,6 +16,12 @@ devices nor webgl_data.db has WebGL data for on that OS (Direct3D 10-level
 "vs_4_0" parts, Windows on ARM, "Generic Renderer", 945GM and GTX 480 on macOS,
 8800 GTX / HD 400 / HD 5850 / GTX 480 on Linux). A launch replaced each one's
 GPU wholesale.
+
+Restored on 2026-09-27: 24 of those macOS presets (9 in fingerprint-presets.json,
+15 in -v150) and both macOS weights (Intel(R) HD Graphics 400 0.074, Radeon R9
+200 Series 0.037). The rule that dropped them took Firefox's sanitized buckets
+for devices: an Intel Mac's UHD 630 reports "Intel(R) HD Graphics 400", a
+Radeon Pro 5500M "Radeon R9 200 Series". They broke no other rule.
 """
 
 import json

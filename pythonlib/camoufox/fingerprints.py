@@ -1491,21 +1491,24 @@ def sample_webgl_for_screen(
     height: Optional[int] = None,
     attempts: int = 32,
     seed: Optional[int] = None,
+    cores: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Draw a GPU that fits the screen already chosen, and its WebGL config.
+    """Draw a GPU that fits the screen and core count already chosen, and its
+    WebGL config.
 
     From fpgen's recorded devices (camoufox.webgl.recorded), which never
-    offers a software rasteriser, a GPU the OS cannot report or a discrete GPU
-    behind a netbook panel. From webgl_data.db only if fpgen cannot answer;
+    offers a software rasteriser, a GPU the OS cannot report, a discrete GPU
+    behind a netbook panel or an Intel Mac GPU no Intel Mac pairs with these
+    cores and this screen. From webgl_data.db only if fpgen cannot answer;
     `attempts` bounds that path's rejection sampling.
     """
     from camoufox.webgl import recorded
 
     try:
-        return recorded.sample_webgl_for_screen(target_os, width, height, seed)
+        return recorded.sample_webgl_for_screen(target_os, width, height, seed, cores)
     except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
         _fpgen_webgl_failed(error)
-    return _sample_db_webgl_for_screen(target_os, width, height, attempts, seed)
+    return _sample_db_webgl_for_screen(target_os, width, height, attempts, seed, cores)
 
 
 def _sample_db_webgl_for_screen(
@@ -1514,8 +1517,10 @@ def _sample_db_webgl_for_screen(
     height: Optional[int] = None,
     attempts: int = 32,
     seed: Optional[int] = None,
+    cores: Optional[int] = None,
 ) -> Dict[str, str]:
-    """Sample a webgl_data.db profile that is coherent with the screen already chosen.
+    """Sample a webgl_data.db profile that is coherent with the screen (and, on
+    macOS, the core count) already chosen.
 
     Rejection sampling, so the GPU keeps webgl_data.db's real OS-weighted
     distribution -- we only drop draws that contradict the screen. The screen
@@ -1542,9 +1547,16 @@ def _sample_db_webgl_for_screen(
     # never settles on one: keep drawing until a hardware renderer that fits
     # the screen comes up, and only fall back to the first draw if the pool
     # holds nothing better.
+    from camoufox.coherence import gpu_fits_machine
+
+    def fits(renderer: Optional[str]) -> bool:
+        return gpu_screen_is_plausible(renderer, width, height) and gpu_fits_machine(
+            renderer, target_os, cores, width, height
+        )
+
     first = sample_webgl(target_os, seed=seed)
     renderer = first.get('webGl:renderer')
-    if not is_software_renderer(renderer) and gpu_screen_is_plausible(renderer, width, height):
+    if not is_software_renderer(renderer) and fits(renderer):
         return first
 
     fallback = None if is_software_renderer(renderer) else first
@@ -1553,7 +1565,7 @@ def _sample_db_webgl_for_screen(
         renderer = candidate.get('webGl:renderer')
         if is_software_renderer(renderer):
             continue
-        if gpu_screen_is_plausible(renderer, width, height):
+        if fits(renderer):
             return candidate
         fallback = fallback or candidate
     return fallback or first
@@ -1968,7 +1980,8 @@ def generate_context_fingerprint(
                 # display to reconcile against, so the floor is unconditional.
                 raise_screen_to_modern_floor(config)
                 webgl_fp = sample_webgl_for_screen(
-                    _target_os, config.get('screen.width'), config.get('screen.height')
+                    _target_os, config.get('screen.width'), config.get('screen.height'),
+                    cores=config.get('navigator.hardwareConcurrency'),
                 )
                 webgl_fp.pop('webGl2Enabled', None)
                 config.update(webgl_fp)

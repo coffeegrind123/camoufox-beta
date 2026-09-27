@@ -22,8 +22,8 @@ What it covers:
   webgl/webgl_data.db
       Each (vendor, renderer) pair carries a probability per OS. A pair the OS
       cannot report has that probability zeroed, which keeps the row for the
-      platforms where it IS real -- "Radeon R9 200 Series" is a genuine Linux
-      and Windows GPU, it simply never shipped in a Mac.
+      platforms where it IS real -- an "ANGLE (...)" renderer is a genuine
+      Windows string, Firefox 152 on a Mac simply never produces one.
 
 Usage:
     python3 scripts/clean-fingerprint-data.py            # report only
