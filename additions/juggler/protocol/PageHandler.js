@@ -568,14 +568,15 @@ export class PageHandler {
       for (const eventType of types) {
         // Camoufox: when humanize is enabled, expand a direct mousemove into a
         // human-like trajectory of intermediate mousemoves, replayed from a
-        // recording of a real hand (input/CursorTrajectory.js -> Cursory).
+        // recording of a real hand (input/CursorTrajectory.js -> Cursory, or
+        // mousecrack when humanize:engine asks for it).
         if (eventType === 'mousemove' && ChromeUtils.camouGetBool('humanize', false)) {
           // The endpoints are excluded: the cursor is already on the first, and
           // the last is the destination dispatched explicitly below.
           let from = this._lastTrackedPos;
           if (!this._cursorEntered)
             from = entryPoint(dispatch.boundingBox, x);
-          const {steps, trailingDelayMs} = humanizedSteps(from.x, from.y, x, y);
+          const {steps, trailingDelayMs} = await humanizedSteps(from.x, from.y, x, y);
           await dispatch.sendTrajectoryAcked(watcher, 'mousemove', steps, trailingDelayMs);
           // Always finish exactly on the requested destination.
           promises.push(dispatch.sendAcked(watcher, 'mousemove', x, y));

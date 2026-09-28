@@ -123,7 +123,7 @@ patch, never as an edit to that tree.
 |---|---|
 | `patches/` | Diffs applied to Firefox (44 top level, plus `playwright/`, `librewolf/`, `ghostery/`). Browser behaviour changes here. |
 | `additions/camoucfg/` | The C++ config layer. `MaskConfig.hpp` reads `CAMOU_CONFIG`, which the patches consult. |
-| `additions/juggler/` | Camoufox's Juggler, Playwright's Firefox protocol. The page agent runs in an isolated world. `input/` holds the Cursory cursor trajectories. |
+| `additions/juggler/` | Camoufox's Juggler, Playwright's Firefox protocol. The page agent runs in an isolated world. `input/` holds the cursor trajectory generators: Cursory (default) and mousecrack. |
 | `settings/` | `camoufox.cfg` (prefs), `properties.json` (every config key and its type), `chrome.css`, policies. |
 | `scripts/` | `patch.py` applies patches and writes the mozconfig; `copy-additions.sh`, `package.py`, `install-deps.sh`, font tooling. |
 | `pythonlib/` | The `camoufox` PyPI package, the reference launcher. It draws identities with [fpgen](https://github.com/scrapfly/fingerprint-generator), checks them with `coherence.py`, and launches the binary. |
