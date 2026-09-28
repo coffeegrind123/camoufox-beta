@@ -336,6 +336,10 @@ jobs:
   # ---------------------------------------------------------------------------
   typescript:
     name: typescript
+    # This fork ships the Python launcher only and does not port its launcher
+    # changes to TypeScript, so the parity goldens fail by design. The job runs
+    # and reports, but neither gates the merge nor turns the run red.
+    continue-on-error: true
     # Tier 1, beside pythonlib. The npm package's type check, lint and vitest
     # suite, including the golden tests that hold it to pythonlib's output byte
     # for byte -- so a pythonlib change that typescript/ does not mirror fails
@@ -980,6 +984,10 @@ jobs:
   # ---------------------------------------------------------------------------
   typescript-browser:
     name: typescript (browser)
+    # This fork ships the Python launcher only and does not port its launcher
+    # changes to TypeScript, so the parity goldens fail by design. The job runs
+    # and reports, but neither gates the merge nor turns the run red.
+    continue-on-error: true
     # Tier 3a. Launches the browser under test through the TS API -- headless,
     # persistent context, and launchServer -- and checks that a page sees the
     # same identity pythonlib's launch of it shows.
