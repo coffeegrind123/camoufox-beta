@@ -25,6 +25,9 @@ an invariant stock Firefox 152 holds:
                       about what UTC getters do
   timezone-relaunch   a persistent profile relaunched with another timezone
                       reports the new one, in the page and in a worker
+  web-serial          navigator.serial exists on a secure page. Any enterprise
+                      policy turns Web Serial off unless DefaultSerialGuardSetting
+                      turns it back on
 
     python tests/patches/stock-parity-probes.py
 """
@@ -79,6 +82,9 @@ def serve():
 
 PROBES = """async (port) => {
   const out = {};
+  out.secureContext = isSecureContext;
+  out.serial = 'serial' in navigator;
+
   const c2d = document.createElement('canvas').getContext('2d');
   out.canvasFonts = {};
   for (const k of ['caption', 'icon', 'menu', 'message-box', 'small-caption', 'status-bar']) {
@@ -288,12 +294,12 @@ def main() -> int:
     # Default: the delta the caller asked for, in pixels, as one event.
     if len(wheel) != 1 or wheel[0]["mode"] != 0 or wheel[0]["dy"] != 300:
         failures.append(f"wheel-default: wheel(0, 300) gave {wheel}")
-    # humanize=True: notches, each carrying one native tick.
     scaled = out["wheelScaled"]
     if out["wheelScaledDpr"] != 2:
         failures.append(f"wheel-scaled: devicePixelRatio {out['wheelScaledDpr']} at devPixelsPerPx 2 -- check is vacuous")
     if len(scaled) != 1 or scaled[0]["mode"] != 0 or scaled[0]["dy"] != 300:
         failures.append(f"wheel-scaled: wheel(0, 300) at 2x gave {scaled}")
+    # humanize=True: notches, each carrying one native tick.
     humanized = out["wheelHumanized"]
     if len(humanized) != 3 or any(e["wd"] % 120 for e in humanized):
         failures.append(f"wheel-notches: humanized wheel(0, 300) gave {humanized}")
@@ -316,6 +322,10 @@ def main() -> int:
         failures.append(f"timezone-cost: getHours {out['costLocalDate']:.0f} ms vs getUTCHours {out['costUTCDate']:.0f} ms")
     if relaunch != [["Asia/Tokyo"] * 2, ["America/Chicago"] * 2]:
         failures.append(f"timezone-relaunch: persistent profile reported {relaunch}")
+    if not out["secureContext"]:
+        failures.append("web-serial: the probe page is not a secure context -- check is vacuous")
+    elif not out["serial"]:
+        failures.append("web-serial: navigator.serial is missing (policies.json needs DefaultSerialGuardSetting: 3)")
 
     print()
     if failures:

@@ -633,26 +633,24 @@ class Cycle(enum.Enum):
     CRASH = "crash"
 
 
-# The parent's first context cycle costs it ~200 MB whatever happens in it, and
-# the second still 10-40 MB. Measuring from launch buried a leak under that.
+# The parent's first context costs it 150-200 MB with no crash at all, and the
+# second still 10-40 MB. A baseline taken before them counts that as growth.
 WARMUP_CYCLES = 2
 # Per phase. Long enough for a per-crash leak to outgrow the +-50 MB a phase
 # wanders by on its own.
 PHASE_CYCLES = 8
 # How much more the crash phase may grow the parent than the control phase.
-# Measured 2026-09-27, 8 runs each (local, 16 cores): -95..+2 MB with crashed
-# tabs closed, +146..+591 MB when every crashed page kept its window open.
+# Measured locally, 18 and 20 runs: -105..+26 MB with crashed tabs closed,
+# +132..+591 MB when every crashed page kept its window open.
 CRASH_EXCESS_LIMIT_MB = 100
 
 
 async def _context_cycle(psutil_mod, browser, cycle: Cycle):
-    """One context's life: open, navigate, maybe lose the content process, close."""
+    """One context's life: open a page, maybe lose its content process, close."""
     if cycle is Cycle.CRASH:
         context, _ = await _content_crash(psutil_mod, browser)
     else:
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto("about:blank")
+        context, _ = await a_page(browser)
     await asyncio.sleep(1.5)
     try:
         await bounded(close_bounded(context, 30, "context.close()"), 40, "close")
@@ -669,8 +667,8 @@ async def test_the_parent_stays_flat_across_content_crashes(binary, psutil_mod, 
 
     The parent grows on context cycles whether or not anything crashes, so the
     crash phase is measured against a control phase of the same cycles without
-    the kill, both after a warm-up. The old raw 400 MB bound was mostly warm-up,
-    and hid a real leak: every crashed page kept its window open, 35-60 MB each.
+    the kill. A raw bound on the crash phase alone hid a real leak: every
+    crashed page kept its browser window open, 15-60 MB each.
     """
     manager, browser = await open_browser(binary)
     parent = wait_for_process(psutil_mod, BROWSER)[0]

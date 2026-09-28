@@ -150,22 +150,48 @@ jobs:
         # Only a change that can alter the binary justifies compiling one. A
         # pull request that touches pythonlib/ or ci/ is a driver change: it
         # still gets the full browser suite, but against the published build its
-        # users are running, which takes a minute instead of seventy.
+        # users are running, which takes a minute instead of seventy -- as long
+        # as that build matches this tree's browser sources (see below).
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "browser_changed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Not a pull request -- building, which also refreshes the shared ccache."
             exit 0
           fi
+          sources='^(patches/|additions/|settings/|assets/|upstream\.sh|Makefile|scripts/)'
           base="${{ github.event.pull_request.base.sha }}"
           changed=$(git diff --name-only "$base"...HEAD || echo "")
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
-          if echo "$changed" | grep -qE '^(patches/|additions/|settings/|assets/|upstream\.sh|Makefile|scripts/)'; then
+          if echo "$changed" | grep -qE "$sources"; then
             echo "browser_changed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Browser sources changed -- rebuilding from source."
+            exit 0
+          fi
+          # The pull request leaves the browser alone -- but the published
+          # release is only the right browser to test it on if it was built from
+          # the SAME browser sources as this tree. The patch guards and suites
+          # come from this checkout, so when the base branch has moved past the
+          # release (a merged browser change that is not published yet), testing
+          # the release pairs new guards with an old browser, and every guard for
+          # the unreleased change fails on a pull request that never touched it.
+          # Compare against the tag the release was cut from; if they differ,
+          # build -- which restores the base branch's cached browser when its
+          # compiled half matches, so it costs minutes, not the full build.
+          . ./upstream.sh
+          tag="v${version}-${release}"
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "browser_changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::No release tag $tag -- the release this tree targets is not published; building."
+            exit 0
+          fi
+          ahead=$(git diff --name-only "$tag" HEAD | grep -E "$sources" || true)
+          if [ -n "$ahead" ]; then
+            echo "browser sources that differ from $tag:"; echo "$ahead" | sed 's/^/  /'
+            echo "browser_changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::The base branch's browser sources are ahead of the published $tag ($(echo "$ahead" | wc -l) files) -- building (a cache hit when the base branch already built it)."
           else
             echo "browser_changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No browser sources changed -- testing against the published release."
+            echo "::notice::No browser sources differ from the published $tag -- testing against it."
           fi
 
       - name: May the stealth check run?
@@ -226,7 +252,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       # -e pythonlib because the settled-decisions tests import camoufox.* to
       # assert against it. It is a pure-Python install; no browser involved.
-      - run: pip install -r ci/requirements.txt pytest -e pythonlib
+      - run: |
+          pip install -r ci/requirements.txt pytest -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
 
       - name: Synthesized input goes through one chokepoint
         run: python3 scripts/check-input-dispatch.py
@@ -278,7 +310,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -r ci/requirements.txt pytest -e pythonlib
+      - run: |
+          pip install -r ci/requirements.txt pytest -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
       - name: Run
         # pythonlib resolves the published release through the GitHub API
         # (pkgman.py honours GITHUB_TOKEN). Unauthenticated, a runner shares the
@@ -291,6 +329,73 @@ jobs:
         if: always()
         with:
           name: results-pythonlib
+          path: .ci-work/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  typescript:
+    name: typescript
+    # Tier 1, beside pythonlib. The npm package's type check, lint and vitest
+    # suite, including the golden tests that hold it to pythonlib's output byte
+    # for byte -- so a pythonlib change that typescript/ does not mirror fails
+    # here, in a minute, not after the build.
+    needs: [resolve, static]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      # The fpgen model the TS port downloads (sha256-pinned by
+      # scripts/data/fpgen-model.json). Kept in the workspace so it can be cached.
+      CAMOUFOX_FPGEN_DATA: ${{ github.workspace }}/.ci-work/fpgen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          # Not PYTHON_VERSION: the golden fixtures are regenerated from this
+          # interpreter, and pycompat.ts's pySum() reproduces sum() as 3.14
+          # computes it (3.12/3.13 round mixed int/float sums differently in
+          # the last bit).
+          python-version: "3.14"
+      - run: |
+          # A venv at the repo root: tests/golden-setup.ts records the golden
+          # fixtures from its pythonlib before the suite runs.
+          python3 -m venv .venv
+          .venv/bin/pip install -r ci/requirements.txt -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          .venv/bin/python scripts/pin-fpgen-model.py
+      - name: Test prerequisites
+        # Everything tests/prereq.ts may ask for. In CI a missing prerequisite
+        # FAILS its tests rather than skipping them, so this list is the job's
+        # contract. xvfb: the virtual-display lifecycle.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: typescript/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: actions/cache@v4
+        with:
+          path: .ci-work/fpgen
+          key: fpgen-model-${{ hashFiles('scripts/data/fpgen-model.json') }}
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .venv/bin/python -m ci.run_typescript
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-typescript
           path: .ci-work/results/
           include-hidden-files: true
           if-no-files-found: warn
@@ -380,10 +485,6 @@ jobs:
         if: steps.prebuilt.outputs.cache-hit != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - uses: actions/setup-go@v5
-        if: steps.prebuilt.outputs.cache-hit != 'true'
-        with:
-          go-version: "1.23"
 
       - name: Install build dependencies
         if: steps.prebuilt.outputs.cache-hit != 'true'
@@ -432,8 +533,6 @@ jobs:
 
       - name: Prepare the source tree
         if: steps.prebuilt.outputs.cache-hit != 'true'
-        env:
-          CAMOUFOX_PASSWD: ${{ secrets.CAMOUFOX_PASSWD }}
         run: |
           ccache -M 8G && ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
@@ -495,7 +594,7 @@ jobs:
           #                            FileNotFoundError without it. That breaks
           #                            patch-guards, the leak suite and sundial.
           make stage-fonts
-          for f in properties.json chrome.css camoucfg.jvv; do
+          for f in properties.json chrome.css; do
             [ -f "$src/$f" ] || cp -v "settings/$f" "$src/$f"
           done
 
@@ -604,7 +703,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -r ci/requirements.txt -e pythonlib
+      - run: |
+          pip install -r ci/requirements.txt -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
 
       - name: Download
         # Same GitHub API path as the pythonlib job above, and the same anonymous
@@ -614,7 +719,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m camoufox fetch
-          install_dir="$(python -m camoufox path)"
+          # The ACTIVE build's directory, resolved the way the launcher resolves
+          # it. `camoufox path` prints the cache root, and multiversion installs
+          # each build under browsers/<channel>/<version>/ -- so reading the
+          # binary from the root failed every driver-only run since #772.
+          install_dir="$(python -c 'from camoufox.pkgman import camoufox_path; print(camoufox_path(download_if_missing=False))')"
           echo "install dir: $install_dir"
           # Which browser did we actually get? This path does not build, it
           # downloads the current release -- correct for a driver change, since
@@ -707,9 +816,23 @@ jobs:
   patch-guards:
     # Tier 3a: the cheap checks on a fresh browser. If these fail the browser is
     # broken in an obvious way and tier 3b would only say so more slowly.
+    #
+    # Whether the patches APPLY is the build's job; these check that what they
+    # do still works. One leg per kind of guarantee (ci/run_patch_guards.py
+    # GROUPS), plus the skiplist audit, so a failure names which kind broke and
+    # the legs run side by side. One job id, so everything that waits on the
+    # guards keeps `needs: patch-guards`.
     if: always() && (needs.build.result == 'success' || needs.fetch-browser.result == 'success')
-    name: Patch guards
+    name: ${{ matrix.title }}
     needs: [resolve, build, fetch-browser]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {leg: spoofing, title: "Patch guards: spoofing"}
+          - {leg: automation, title: "Patch guards: automation"}
+          - {leg: parity, title: "Patch guards: stock parity"}
+          - {leg: skiplist, title: "Skiplist audit"}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -721,11 +844,19 @@ jobs:
       - uses: ./.github/actions/prepare-browser
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -e pythonlib
+      - run: |
+          pip install -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
       # Fonts and properties.json are staged into the artifact by the build job;
       # `make stage-fonts` here would find no source tree and do nothing.
-      - run: xvfb-run -a python3 -m ci.run_patch_guards --binary "$CAMOUFOX_BINARY"
+      - if: matrix.leg != 'skiplist'
+        run: xvfb-run -a python3 -m ci.run_patch_guards --group "${{ matrix.leg }}" --binary "$CAMOUFOX_BINARY"
       - name: Every skiplist entry is still failing
+        if: matrix.leg == 'skiplist'
         # Seconds, because a correct skiplist is short. This is what stops
         # ci/skiplist.yml turning into a list of tests that would now pass --
         # which is what it was: 193 of the 202 tests it skipped passed.
@@ -740,7 +871,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-patch-guards
+          name: results-patch-guards-${{ matrix.leg }}
           path: .ci-work/results/
           include-hidden-files: true
           if-no-files-found: warn
@@ -765,6 +896,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: |
           cd build-tester && npm install && pip install -r requirements.txt
+          # build-tester pulls pythonlib -- and so fpgen -- through its own
+          # requirements.txt (`-e ../pythonlib`) rather than `pip install -e
+          # pythonlib`, so the pin the other jobs get by matching that line has
+          # to be spelled out here. Without it this job was still downloading
+          # fpgen's model itself: TLS verification off, no checksum, and only
+          # ever the April-2025 release (observed in run 36050915401).
+          python3 "$GITHUB_WORKSPACE/scripts/pin-fpgen-model.py"
       - run: xvfb-run -a python3 -m ci.run_build_tester --binary "$CAMOUFOX_BINARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -802,7 +940,13 @@ jobs:
       - uses: ./.github/actions/prepare-browser
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -e pythonlib
+      - run: |
+          pip install -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
       - name: Run
         # Launches browsers, kills them, and proves nothing survived -- the
         # failure a long-running scraper hits after six hours and no Playwright
@@ -834,22 +978,87 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  typescript-browser:
+    name: typescript (browser)
+    # Tier 3a. Launches the browser under test through the TS API -- headless,
+    # persistent context, and launchServer -- and checks that a page sees the
+    # same identity pythonlib's launch of it shows.
+    needs: [resolve, build, fetch-browser, typescript]
+    if: >-
+      always() && needs.typescript.result == 'success' &&
+      (needs.build.result == 'success' || needs.fetch-browser.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CAMOUFOX_FPGEN_DATA: ${{ github.workspace }}/.ci-work/fpgen
+      # The browser under test is the build job's unpackaged dist/bin, which
+      # packages en-US only: scripts/package.py adds the langpacks, and CI never
+      # runs it. A de-DE/fr-FR identity therefore presents en-US here though a
+      # packaged release presents de-DE. The e2e locale assertions skip on that
+      # (named) gap; everything else in the page-vs-config checks still runs.
+      # Remove this once the test artifact carries the langpacks.
+      CAMOUFOX_TEST_ALLOW_MISSING: packaged-locales
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/prepare-browser
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          pip install -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: typescript/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: actions/cache@v4
+        with:
+          path: .ci-work/fpgen
+          key: fpgen-model-${{ hashFiles('scripts/data/fpgen-model.json') }}
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: xvfb-run -a python3 -m ci.run_typescript --browser "$CAMOUFOX_BINARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-typescript-browser
+          path: .ci-work/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
   growth:
-    name: Memory growth (scheduled)
-    # Deliberately NOT in the merge gate. It takes ~37 minutes, because every
-    # mechanism is churned twice -- at n and 4n -- to measure whether growth
-    # scales with the count. That is the wrong price to pay on every pull
-    # request for a detector aimed at a slow-moving class of bug, so it runs on
-    # the schedule and on demand, and a failure opens a conversation rather than
-    # blocking a merge.
+    name: Memory growth ${{ matrix.shard }}
+    # Every mechanism is churned twice -- at n and 4n -- to measure whether
+    # growth scales with the count: ~38 minutes in one process, which kept this
+    # off pull requests. One test per runner (ci.run_native --shard) brings it
+    # to the length of a Playwright shard, so it runs on every pull request and
+    # is part of the merge gate. Seven shards for the seven tests in
+    # native-tests/test_memory_growth.py; with more tests than shards a shard
+    # simply runs two.
     needs: [resolve, build, fetch-browser, patch-guards, build-tester]
     if: >-
       always()
-      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
       && needs.patch-guards.result == 'success'
       && needs.build-tester.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/7", "2/7", "3/7", "4/7", "5/7", "6/7", "7/7"]
     permissions:
       contents: read
     steps:
@@ -859,12 +1068,19 @@ jobs:
       - uses: ./.github/actions/prepare-browser
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -e pythonlib
-      - run: xvfb-run -a python3 -m ci.run_native --subset growth --binary "$CAMOUFOX_BINARY"
+      - run: |
+          pip install -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
+      - run: xvfb-run -a python3 -m ci.run_native --subset growth --shard "${{ matrix.shard }}" --binary "$CAMOUFOX_BINARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-growth
+          # A shard's "3/7" cannot go in an artifact name.
+          name: results-growth-${{ strategy.job-index }}
           path: .ci-work/results/
           include-hidden-files: true
           if-no-files-found: warn
@@ -885,7 +1101,13 @@ jobs:
       - uses: ./.github/actions/prepare-browser
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -e pythonlib
+      - run: |
+          pip install -e pythonlib
+          # fpgen downloads its model on first import with TLS verification
+          # OFF and no checksum, and its release picker can only ever reach the
+          # April-2025 model. Install the pinned one first: see
+          # scripts/pin-fpgen-model.py.
+          python3 scripts/pin-fpgen-model.py
       - name: Run
         # Exits 0 with a SKIP result if sundial itself is unreachable -- the
         # browser was never measured, so neither a pass nor a failure would be
@@ -915,8 +1137,10 @@ jobs:
   # ---------------------------------------------------------------------------
   summary:
     name: Summary
+    # Not typescript or typescript (browser): this fork ships the Python
+    # launcher only, so the TypeScript jobs run and report but gate nothing.
     needs: [resolve, static, pythonlib, build, fetch-browser, playwright,
-            patch-guards, build-tester, native, sundial]
+            patch-guards, build-tester, native, growth, sundial]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
@@ -956,7 +1180,12 @@ jobs:
           # summarize report "produced no result file" and fail the gate on
           # every pull request that did not touch the browser. Which is most of
           # them, and exactly the cheap path this pipeline advertises.
-          required="pythonlib native_rules patch_guards skiplist_audit build_tester playwright native_browser"
+          #
+          # typescript and typescript_browser are advisory in this fork, which
+          # ships the Python launcher only: not required, and a failure is
+          # reported but not fatal (--allow-failure), since their results can
+          # land here without this job waiting on them.
+          required="pythonlib native_rules patch_guards_spoofing patch_guards_automation patch_guards_parity skiplist_audit build_tester playwright native_browser native_growth"
           if [ "${{ needs.resolve.outputs.browser_changed }}" = "true" ]; then
             required="$required build"
           fi
@@ -967,6 +1196,7 @@ jobs:
             --results-dir .ci-work/results \
             --require $required \
             --allow-skip sundial \
+            --allow-failure typescript typescript_browser \
             --markdown summary.md \
             --out summary.json \
             --browser-version "${{ needs.resolve.outputs.browser_version }}" \
@@ -1021,8 +1251,11 @@ jobs:
     # that is not `success`, including `skipped`, fails the gate: a suite that
     # did not run has not passed, and silently skipping one is the cheapest way
     # to a green tick.
+    #
+    # typescript and typescript (browser) are left out on purpose: this fork
+    # ships the Python launcher only (see the summary job).
     needs: [resolve, static, pythonlib, build, fetch-browser, playwright,
-            patch-guards, build-tester, native, sundial, summary]
+            patch-guards, build-tester, native, growth, sundial, summary]
     if: always()
     runs-on: ubuntu-24.04
     permissions:

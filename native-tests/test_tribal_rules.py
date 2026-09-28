@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -539,6 +540,47 @@ def test_a_sandbox_held_over_a_page_window_is_nuked_not_just_dropped():
         "FrameTree.js caches a Cu.Sandbox over a page window but never nukes it."
         + explain("per-frame-state-released-on-dispose")
     )
+
+
+def test_instant_animations_are_an_opt_in():
+    patch = (REPO_ROOT / "patches" / "no-css-animations.patch").read_text(encoding="utf-8")
+    assert 'MaskConfig::GetBool("instantAnimations")' in patch, explain("animations-run-on-stock-timing")
+    assert "disableInstantAnimations" not in patch, explain("animations-run-on-stock-timing")
+
+
+def test_spoofed_voices_complete_without_a_config_switch():
+    patch = (REPO_ROOT / "patches" / "voice-spoofing.patch").read_text(encoding="utf-8")
+    assert "fakeCompletion" not in patch and "DispatchError(0, 0)" not in patch, (
+        explain("spoofed-voices-speak")
+    )
+
+
+def test_no_glyph_spacing_seed_anywhere():
+    """No config key, no setter, no shaper hook."""
+    declared = {
+        entry["property"]
+        for entry in json.loads((REPO_ROOT / "settings" / "properties.json").read_text())
+    }
+    assert "fonts:spacing_seed" not in declared, explain("no-glyph-spacing-noise")
+    for source in [*sorted((REPO_ROOT / "patches").rglob("*.patch")),
+                   REPO_ROOT / "pythonlib" / "camoufox" / "fingerprints.py"]:
+        assert "FontSpacingSeed" not in source.read_text(encoding="utf-8", errors="ignore"), (
+            f"{source.relative_to(REPO_ROOT)} still carries the spacing seed"
+            + explain("no-glyph-spacing-noise")
+        )
+
+
+def test_no_canvas_seed_is_declared_or_sent():
+    """Nothing in the browser reads a canvas seed, so neither launcher sends one."""
+    declared = {
+        entry["property"]
+        for entry in json.loads((REPO_ROOT / "settings" / "properties.json").read_text())
+    }
+    assert not {k for k in declared if k.startswith("canvas:")}, explain("canvas-is-not-noised")
+    for launcher in ("pythonlib/camoufox/fingerprints.py", "typescript/src/fingerprints.ts"):
+        assert "setCanvasSeed" not in (REPO_ROOT / launcher).read_text(encoding="utf-8"), (
+            f"{launcher} still calls setCanvasSeed" + explain("canvas-is-not-noised")
+        )
 
 
 def test_the_canvas_check_hashes_pixels_rather_than_a_data_url_prefix():

@@ -19,7 +19,7 @@ What it covers:
       invented value ("what core count does a 2-core Apple M1 really have?")
       into a file whose entire purpose is being real.
 
-  webgl/webgl_data.db
+  webgl_data.db
       Each (vendor, renderer) pair carries a probability per OS. A pair the OS
       cannot report has that probability zeroed, which keeps the row for the
       platforms where it IS real -- an "ANGLE (...)" renderer is a genuine
@@ -51,7 +51,7 @@ PRESET_FILES = (
     REPO / 'pythonlib' / 'camoufox' / 'fingerprint-presets.json',
     REPO / 'pythonlib' / 'camoufox' / 'fingerprint-presets-v150.json',
 )
-WEBGL_DB = REPO / 'pythonlib' / 'camoufox' / 'webgl' / 'webgl_data.db'
+WEBGL_DB = REPO / 'pythonlib' / 'camoufox' / 'webgl_data.db'
 OS_KEY = {'macos': 'mac', 'windows': 'win', 'linux': 'lin'}
 # The Firefox version only decides the UA rewrite, which no rule reads.
 FF_VERSION = '152'

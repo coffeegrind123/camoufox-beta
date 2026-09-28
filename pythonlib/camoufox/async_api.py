@@ -17,8 +17,10 @@ from .ip import Proxy, proxy_exit_geo
 from .utils import (
     async_attach_vd,
     attach_no_viewport_default,
-    browser_ff_version,
+    attach_desktop_only_warning,
+    attach_stock_media_defaults,
     launch_options,
+    STOCK_MEDIA_DEFAULTS,
     spoofs_window_dimensions,
 )
 
@@ -167,6 +169,12 @@ async def _launch(
     if persistent_context:
         if no_viewport_default and not ('viewport' in from_options or 'no_viewport' in from_options):
             from_options = {**from_options, 'no_viewport': True}
+        # The persistent context is created by the launch itself, so its media
+        # features come from these options rather than from new_context().
+        from_options = {
+            **{k: v for k, v in STOCK_MEDIA_DEFAULTS.items() if k not in from_options},
+            **from_options,
+        }
         context = await playwright.firefox.launch_persistent_context(**from_options)
         return await async_attach_vd(context, virtual_display)
 
@@ -174,6 +182,8 @@ async def _launch(
     browser = await playwright.firefox.launch(**from_options)
     if no_viewport_default:
         attach_no_viewport_default(browser)
+    attach_stock_media_defaults(browser)
+    attach_desktop_only_warning(browser)
     return await async_attach_vd(browser, virtual_display)
 
 
@@ -196,27 +206,25 @@ async def AsyncNewContext(
     """
     Creates a new browser context with a unique fingerprint identity.
 
-    Each context gets its own real fingerprint preset (navigator, screen, WebGL, fonts, etc.)
-    with unique seeds for audio, canvas, and font spacing noise. All values are applied
+    Each context gets its own identity (navigator, screen, WebGL, fonts, voices),
+    drawn by fpgen unless a preset is given. All values are applied
     via addInitScript so they self-destruct before page scripts can detect them.
 
     Parameters:
         browser: A Browser instance from AsyncNewBrowser or AsyncCamoufox.
-        preset: A specific fingerprint preset dict to use. If None, picks randomly.
-        os: Target OS for preset selection ("windows", "macos", "linux").
-        ff_version: Firefox version string for UA patching. Defaults to the
-            browser's own (Browser.version).
-        webrtc_ip: IPv4 address to spoof for WebRTC ICE candidates.
+        preset: A fingerprint preset dict to use. If None, fpgen draws a new identity.
+        os: Target OS for the drawn identity ("windows", "macos", "linux").
+        ff_version: Firefox major version to claim in the UA. Defaults to the browser's own.
+        webrtc_ip: IPv4 or IPv6 address to spoof for WebRTC ICE candidates.
         proxy: Per-context proxy (Playwright format: {"server": "...", "username": "...", "password": "..."}).
             Unless webrtc_ip and timezone_id are both given, they are looked up from the
             proxy's exit IP; InvalidIP is raised if that lookup fails.
         geolocation: Per-context geolocation ({"latitude": float, "longitude": float}).
         **context_kwargs: Additional Playwright new_context() options.
     """
-    # The identity claims the engine it runs on: left unset, the user agent kept
-    # its corpus's version (Firefox/135.0 on a 152 build), a UA/engine mismatch.
-    if ff_version is None:
-        ff_version = browser_ff_version(browser)
+    # The drawn UA carries fpgen's Firefox version, which must not disagree with
+    # the browser the page is actually talking to.
+    ff_version = ff_version or browser.version.split('.', 1)[0]
 
     # Auto-derive WebRTC IP and timezone from proxy's exit IP when not explicitly provided
     if proxy and (not webrtc_ip or "timezone_id" not in context_kwargs):

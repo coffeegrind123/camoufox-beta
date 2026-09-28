@@ -1,6 +1,6 @@
 """
 Verify worker reads of per-context values (anti-font-fingerprinting.patch,
-RoverfoxStorageManager; lang315/camoufox#145).
+RoverfoxStorageManager).
 
   values  a worker in a macOS context of a Windows launch reports the context's
           navigator.platform, hardwareConcurrency and timezone, like its window
@@ -9,10 +9,9 @@ RoverfoxStorageManager; lang315/camoufox#145).
           crash the content process
 
 Workers used to fall through to libpref, whose table is main-thread only and
-looked up without a lock in a release build. On cg.4 before the fix the race
-case crashed the content process within 8 s in 8 of 8 runs; the controls held
-for 60 s: no workers (117-133 contexts), workers reading navigator.onLine
-(~2e9 reads), and config-reading workers with no contexts created.
+looked up without a lock in a release build. On v152.0.4-beta.30, which reads
+it, the race case crashed the content process in 21 of 21 runs, after 0-46
+contexts; with no workers the same loop held for 60 s (67-80 contexts).
 
     python tests/patches/worker-config-reads.py
 """
@@ -28,12 +27,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import resolve_binary  # noqa: E402
 
-RACE_SECONDS = 30
-# Two still crash the unfixed build (2/2 on 4 pinned cores). The CI navigation
-# timeouts once blamed on four workers starving a 4-core runner were uBO:
-# reinstalled per window, and holding requests while it compiled its lists
-# (see ubo-startup.py).
-WORKERS = 2
+# Four workers for 60 s: two for 30 s crashed beta.30 in only 7 of 11 runs.
+RACE_SECONDS = 60
+WORKERS = 4
 # One content process, so every context's prefs land in the workers' process.
 ONE_PROCESS = {"dom.ipc.processCount": 1, "dom.ipc.processCount.webIsolated": 1}
 
@@ -99,6 +95,7 @@ def check_values(binary, url, failures):
 
 
 def check_race(binary, url, failures):
+    from camoufox import DefaultAddons
     from camoufox.sync_api import Camoufox
     from camoufox.fingerprints import generate_context_fingerprint
 
@@ -108,8 +105,12 @@ def check_race(binary, url, failures):
     created = 0
     gotos = []
     reads = 0
+    # Without uBlock Origin, which is reinstalled for every window (#185): on
+    # beta.30 the fourth context's navigation hung for 45 s in 3 of 3 runs even
+    # with no workers, a harness error that would hide the race.
     with Camoufox(os="windows", headless=True, executable_path=str(binary),
-                  firefox_user_prefs=ONE_PROCESS, i_know_what_im_doing=True) as browser:
+                  firefox_user_prefs=ONE_PROCESS, exclude_addons=[DefaultAddons.UBO],
+                  i_know_what_im_doing=True) as browser:
         spin = browser.new_page()
         spin.on("crash", lambda _: crashed.append("spinning page"))
         spin.goto(url)

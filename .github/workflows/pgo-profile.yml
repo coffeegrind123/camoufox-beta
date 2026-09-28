@@ -135,7 +135,7 @@ jobs:
           # binary (a first run died on fontconfig/windows/fonts.conf), and
           # properties.json beside it; mach does not put them there.
           make stage-fonts
-          for f in properties.json chrome.css camoucfg.jvv; do
+          for f in properties.json chrome.css; do
             [ -f "$src/$f" ] || cp -v "settings/$f" "$src/$f"
           done
           # fonts/ holds the bundle's group directories (bundle/fonts/groups.json).

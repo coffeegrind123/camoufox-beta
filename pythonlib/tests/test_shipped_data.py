@@ -36,7 +36,7 @@ sys.path.insert(0, join(dirname(__file__), ".."))
 
 from camoufox import coherence  # noqa: E402
 from camoufox.fingerprints import from_preset  # noqa: E402
-from camoufox.webgl.sample import DB_PATH  # noqa: E402
+from camoufox.webgl_db import DB_PATH  # noqa: E402
 
 DATA = Path(__file__).parent.parent / "camoufox"
 PRESET_FILES = ("fingerprint-presets.json", "fingerprint-presets-v150.json")

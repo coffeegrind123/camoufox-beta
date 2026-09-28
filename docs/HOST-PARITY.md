@@ -7,7 +7,7 @@ what a page reads, and how it is closed.
 
 | Tell (before) | What the page read | Fix | Where |
 |---|---|---|---|
-| CSS animations finished instantly | a 2 s transition sampled at 0.5 s: 10px, stock ~60px | `disableInstantAnimations` on by default | launcher |
+| CSS animations finished instantly | a 2 s transition sampled at 0.5 s: 10px, stock ~60px | animations run on stock timing unless `instantAnimations` is set (off by default) | launcher |
 | Codec matrix of a Linux container | `canPlayType` "" for H.264/HEVC; stock Windows "probably" | `media:spoof_codecs` for Windows/macOS identities; matches Windows on 58 strings | launcher |
 | `decodingInfo()` asked the host | H.264, HEVC, AAC unsupported; VP9 not power-efficient | with codec spoofing, supported + smooth, power-efficient per `media:hwCodecs` (Windows: H.264, HEVC, VP9) or small frames | `media-codec-spoofing.patch` |
 | WebGPU off | no `navigator.gpu`, ~390 `GPU*` members missing | `dom.webgpu.enabled` + external textures for Windows identities | launcher |

@@ -42,27 +42,14 @@ skip:
   #
   # That breaks far less than this section used to claim. test_click.py,
   # test_check.py, test_fill.py, test_focus.py, test_dispatch_event.py and
-  # test_element_handle.py were skipped wholesale -- 160 tests -- and 158 of
-  # them pass. Only the two below actually fail, and they fail for one specific
-  # reason rather than for "humanized input" in general.
+  # test_element_handle.py were skipped wholesale -- 160 tests -- and all of
+  # them pass. The last two, test_click.py's stable-position tests, were blamed
+  # on humanized travel time; they failed because every animation finished at
+  # once, so the element Playwright waited on never moved. With animations on
+  # stock timing (instantAnimations is now opt-in) they pass too.
   #
   # See docs/input-dispatch.md. tests/patches/humanize-mouse-trajectory.py and
   # tests/patches/input-ack-backstop.py assert the behaviour that replaces them.
-
-  - test: tests/async/test_click.py::test_wait_for_stable_position
-    reason: >-
-      Upstream animates a button over 500ms and asserts click() waits for it to
-      stop moving, landing at offset 300. Camoufox clicks at 100 -- mid-flight.
-      Playwright's stable-position wait polls the bounding box and then dispatches
-      instantly; the humanized path spends real time travelling to the target, so
-      the element has moved on by the time the press lands. Narrow and real: the
-      other 68 tests in this module pass.
-
-  - test: tests/async/test_click.py::test_timeout_waiting_for_stable_position
-    reason: >-
-      The same stable-position wait, asserted from the other side -- upstream
-      expects a timeout error when the element never settles, and Camoufox does
-      not raise one.
 
   - test: tests/async/test_keyboard.py::test_should_send_proper_codes_while_typing
     reason: >-
@@ -188,43 +175,43 @@ skip:
       synthesizes a real click, which grants a real activation -- and so does
       page.evaluate(() => window.open(...)).
 
-  # --- viewport emulation without Responsive Design Mode ---------------------
+  # --- scrollbars in an emulated viewport --------------------------------------
   #
-  # Upstream Juggler puts every page with an emulated viewport into devtools'
-  # Responsive Design Mode, which draws content with the Android theme and
-  # overlay scrollbars, so a scrollbar takes no layout width. Camoufox does not
-  # (additions/juggler/TargetRegistry.js, guard tests/patches/viewport-no-rdm.py):
-  # RDM's scrollbars and its getter shortcuts are readable by the page. The
-  # suite launches the bare binary headless on Linux, whose stock scrollbars
-  # are classic and 12 px wide, so a 500 px viewport lays out 488 px of content
-  # -- exactly as stock Firefox does with those scrollbars.
+  # Upstream's headless Firefox hides content scrollbars with an agent style
+  # sheet, which a page can read back, so Camoufox leaves them to the platform
+  # look-and-feel (additions/juggler/components/Juggler.js). These tests were
+  # still passing only because Juggler put every viewport context into
+  # Responsive Design Mode, whose overlay scrollbars take no width. It no longer
+  # does for any page, isMobile included, where Playwright's own Juggler still
+  # does for isMobile (microsoft/playwright#41859)
+  # (additions/juggler/TargetRegistry.js, guard
+  # tests/patches/viewport-no-rdm.py). The suite launches the bare binary
+  # headless on Linux, which draws classic 12 px scrollbars, so a 500 px wide
+  # grid.html page lays out 488 px of content, as stock Firefox does.
 
   - test: tests/async/test_element_handle.py::test_bounding_box
     reason: >-
-      grid.html in a 500x500 viewport: with the 12 px classic scrollbar nine
-      50 px boxes fit per row instead of ten, so box 13 is at x=150, not the
-      x=100 upstream measured under RDM's zero-width overlay scrollbars. Stock
-      Firefox with classic scrollbars lays out the same 150.
+      grid.html in a 500x500 viewport: beside a 12 px classic scrollbar nine
+      50 px boxes fit per row, not ten, so box 13 is at x=150 rather than the
+      x=100 upstream measures with no scrollbar width.
 
   - test: tests/sync/test_element_handle.py::test_bounding_box
     reason: >-
       The sync twin of tests/async/test_element_handle.py::test_bounding_box:
-      box 13 at x=150 with a classic scrollbar, as in stock Firefox, where
-      upstream's RDM overlay scrollbars give 100.
+      box 13 is at x=150 beside a classic scrollbar, not 100.
 
   - test: tests/async/test_locators.py::test_locators_should_return_bounding_box
     reason: >-
-      Same grid.html measurement through a locator: x=150 with the 12 px
-      classic scrollbar stock Firefox draws, 100 under RDM's overlay scrollbars.
+      The same grid.html measurement through a locator: x=150 beside a 12 px
+      classic scrollbar, not the 100 upstream measures with none.
 
   - test: tests/sync/test_locators.py::test_locators_should_return_bounding_box
     reason: >-
-      The sync twin of the locator bounding-box test: x=150 with a classic
-      scrollbar, as in stock Firefox; upstream's 100 assumes RDM.
+      The sync twin of the locator bounding-box test: x=150 beside a classic
+      scrollbar, not 100.
 
   - test: tests/async/test_screenshot.py::test_should_screenshot_with_mask
     reason: >-
-      Compares a 500x500 screenshot against a golden image taken under RDM,
-      whose overlay scrollbars draw nothing at rest. Here the page shows the
-      classic scrollbar stock Firefox draws, and the strip differs (5339
-      pixels on CI, run 36256501739).
+      Compares a 500x500 grid.html screenshot with a golden image that has no
+      scrollbar. Here the page draws the classic scrollbar stock Firefox draws,
+      and that strip differs (5339 pixels).

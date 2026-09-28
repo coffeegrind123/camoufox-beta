@@ -159,29 +159,63 @@ rules:
   # Measurement
   # -------------------------------------------------------------------------
 
-  - id: canvas-noise-entropy-is-lower-than-audio
-    title: Two contexts share a canvas fingerprint far more often than they should
-    check: manual   # an open finding, not a settled decision
+  - id: animations-run-on-stock-timing
+    title: Animations run on stock timing unless the caller opts into instantAnimations
+    check: automated
     evidence:
-      - "24 profiles across 3 runs on v152.0.4-beta.30, once the canvas was actually hashed"
-      - "audio 24 distinct / 24 samples; canvas 16 / 24, values recurring across independent runs"
-      - "macOS 7 distinct of 12, Linux 9 of 12; one value seen three times"
-      - "matches the rate at which CI flagged cross-profile canvas collisions"
+      - "measured on v152.0.4-beta.31: el.animate(frames, 1000).effect.getComputedTiming().duration returned 0, a 500ms transition 0"
+      - "the finished promise still resolved after ~1000ms, so the only saving was Playwright's stability wait"
     rationale: >-
-      Audio and canvas are both noised per context, by the same machinery, and
-      were measured in the same runs with the same hash. Audio came back
-      completely unique; canvas did not, and its values repeat across runs that
-      share nothing. So two contexts in one browser are linkable by canvas
-      roughly a third of the time, which is the property per-context spoofing
-      exists to prevent.
-      This was invisible until the fingerprint stopped being a 100-character
-      prefix of a data URL, which compared equal for almost anything. It is
-      recorded as an open question rather than a decision: it may be that canvas
-      output is deliberately tied to the device preset rather than to
-      canvas:seed, in which case the seed is not doing what its name suggests.
-      Not gated, because failing one run in three helps nobody, and not dropped,
-      because it is real. (Audio has since stopped being noised by default; see
-      web-audio-matches-stock. The 24/24 comparison stands as measured.)
+      Instant animations were the default so Playwright never waited on one,
+      but any page reads the zero duration back in one line. Reporting the
+      real duration while not rendering the animation does not hide it
+      either: getComputedStyle or getBoundingClientRect sampled mid-animation
+      returns the end state. So the saving costs stealth, and it is the
+      caller's choice: `instantAnimations: True` turns it on and warns.
+
+  - id: spoofed-voices-speak
+    title: speak() on a spoofed voice starts, then ends after the text's duration
+    check: automated
+    evidence:
+      - "measured on v152.0.4-beta.31: speak() on a spoofed voice fired `error` after 3ms"
+      - "voices:fakeCompletion, the opt-out, fired start and end in the same tick"
+    rationale: >-
+      A spoofed voice has no engine behind it, and a real voice never errors
+      on a plain utterance or ends the instant it starts. So the browser
+      speaks it silently for as long as the text takes at ~150 words per
+      minute. The two config keys that chose between the two tells are gone.
+
+  - id: no-glyph-spacing-noise
+    title: Text is shaped exactly as stock Firefox shapes it; there is no spacing seed
+    check: automated
+    evidence:
+      - "#779 (6daae88): measured +1 px per ~100 glyphs and fractional deltas on every measureText; defaulted the seed to 0"
+      - "issue #741 / ad697a8: the perturbation detached combining marks in Thai, Lao, Arabic, Devanagari and Hebrew"
+    rationale: >-
+      The feature added a seeded amount to every glyph advance so that text
+      widths differed per context. No real machine produces those widths:
+      the same font on the same OS measures the same everywhere, so a width
+      that matches no real installation is a fingerprint, not a disguise. It
+      was defaulted off in #779 and kept as an opt-in, but an opt-in whose
+      only effect is to become detectable is not a feature, so the manager,
+      the window setter, the shaper hook and the config key are gone.
+
+  - id: canvas-is-not-noised
+    title: The canvas is rendered, not noised, and there is no canvas seed
+    check: automated
+    evidence:
+      - "PR #528 (e4528a2): 'Disable Canvas Noise' -- removed the canvas noise patch"
+      - "issue #721: canvas:seed declared and passed through, but nothing consumed it"
+      - "24 profiles across 3 runs on v152.0.4-beta.30: canvas 16 distinct of 24, audio 24 of 24"
+    rationale: >-
+      No stock Firefox perturbs its canvas output, so noise is itself a tell:
+      a page that renders the same image twice and gets two answers has found
+      a spoofing browser. A context's canvas therefore follows what really
+      determines it on a real machine, the GPU and the fonts, and two contexts
+      that share those share a canvas. That is why build-tester counts canvas
+      collisions with the device-level values and does not gate on them. The
+      launchers generated a canvas:seed for three releases after the patch
+      that read it was gone; it is not generated or declared any more.
 
   - id: web-audio-matches-stock
     title: Web Audio is not noised by default; every context renders the stock value
@@ -212,8 +246,7 @@ rules:
       contexts whose canvas differed everywhere else read as identical. Worse,
       the stability check compared the same prefix between two collections, so
       it passed on PNG headers and could not have noticed non-deterministic
-      noise. getImageData is the surface Camoufox noises and the one a
-      fingerprinter reads; hash that.
+      output. getImageData is the surface a fingerprinter reads; hash that.
 
   # -------------------------------------------------------------------------
   # Teardown

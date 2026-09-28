@@ -1,6 +1,7 @@
 import json
 import os
 import platform
+import shutil
 import sys
 from functools import wraps
 from os import environ
@@ -39,7 +40,7 @@ from .pkgman import (
     launch_path,
 )
 from .virtdisplay import VirtualDisplay
-from ._warnings import LeakWarning
+from ._warnings import FallbackWarning, LeakWarning
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
 
@@ -140,6 +141,57 @@ def _fits_at_drawn_scale(fingerprint: Dict[str, Any], screen_cons: Any) -> bool:
 def _host_os_key() -> Optional[str]:
     """The host OS in fonts.json / target_os terms ('mac', 'win', 'lin')."""
     return {'Darwin': 'mac', 'Windows': 'win', 'Linux': 'lin'}.get(platform.system())
+
+
+# navigator.storage.estimate().quota is not a constant: Gecko derives it from
+# the disk. GetTemporaryStorageLimit() (dom/quota/ActorsParent.cpp) takes
+# nsIFile::GetDiskCapacity() of the storage directory and halves it, then
+# QuotaManager::GetGroupLimitForLimit() reports min(that / 5, 10 GiB) to the
+# page -- so any disk of 100 GB or more reads back as exactly 10 GiB, and a
+# smaller one as its own capacity / 10.
+_QUOTA_FIXED_LIMIT_PREF = 'dom.quotaManager.temporaryStorage.fixedLimit'
+# The pref is a signed 32-bit int in KB. Any value above 50 GiB already reports
+# the 10 GiB group cap, so clamping a multi-terabyte disk changes nothing a page
+# can see.
+_INT32_MAX = 2**31 - 1
+
+
+def _stock_profile_disk_capacity_kb() -> Optional[int]:
+    """Half the capacity of the disk a stock Firefox profile would live on, in KB.
+
+    That is the number Gecko's own GetTemporaryStorageLimit() would compute on
+    this machine, and it is what `dom.quotaManager.temporaryStorage.fixedLimit`
+    takes. Capacity is always a multiple of the filesystem block size, so the
+    KB conversion is exact rather than a rounding of it.
+
+    The disk a stock profile lives on, not the one Playwright's throwaway
+    profile lands on: on a host whose temp directory is a tmpfs, that profile
+    sits on a RAM-sized volume no real Firefox profile would (measured here:
+    3 189 253 734 from a 29.7 GiB /tmp, where the same machine's own Firefox
+    reports 10 737 418 240).
+    """
+    home = Path.home()
+    if OS_NAME == 'win':
+        appdata = os.environ.get('APPDATA')
+        candidates = [Path(appdata) / 'Mozilla' if appdata else home, home]
+    elif OS_NAME == 'mac':
+        candidates = [home / 'Library' / 'Application Support' / 'Firefox', home]
+    else:
+        candidates = [home / '.mozilla', home]
+
+    for candidate in candidates:
+        # The directory only exists if Firefox has ever run here; walk up to
+        # the first path that does, which is on the same filesystem anyway.
+        probe = candidate
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        try:
+            total = shutil.disk_usage(probe).total
+        except OSError:
+            continue
+        if total > 0:
+            return min(total // 2 // 1024, _INT32_MAX)
+    return None
 
 
 _FONT_PREFS_OS = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}
@@ -608,7 +660,7 @@ def warn_manual_config(config: Dict[str, Any]) -> None:
     """
     # Manual locale setting
     if is_domain_set(
-        config, 'navigator.language', 'navigator.languages', 'headers.Accept-Language', 'locale:'
+        config, 'navigator.language', 'headers.Accept-Language', 'locale:'
     ):
         LeakWarning.warn('locale', False)
     # Manual geolocation and timezone setting
@@ -625,6 +677,8 @@ def warn_manual_config(config: Dict[str, Any]) -> None:
     # CSS pointer media queries and the TouchEvent interfaces.
     if is_domain_set(config, 'navigator.maxTouchPoints'):
         LeakWarning.warn('max_touch_points', False)
+    if config.get('instantAnimations'):
+        LeakWarning.warn('instant_animations', False)
     # Manual screen/window setting
     if is_domain_set(config, 'screen.', 'window.', 'document.body.'):
         LeakWarning.warn('viewport', False)
@@ -635,8 +689,6 @@ _WINDOW_DIM_KEYS = (
     'window.outerHeight',
     'window.innerWidth',
     'window.innerHeight',
-    'document.body.clientWidth',
-    'document.body.clientHeight',
 )
 
 
@@ -688,6 +740,70 @@ def spoofs_window_dimensions(from_options: Dict[str, Any]) -> bool:
         return False
     blob = ''.join(v for _, v in sorted(chunks))
     return any(key in blob for key in _WINDOW_DIM_KEYS)
+
+
+# Playwright emulates four media features on every context it creates, whether
+# or not the caller asked: `colorScheme` defaults to "light" and reducedMotion /
+# forcedColors / contrast to their no-preference values. That is an override, not
+# a passthrough -- the page then reports it whatever the host is set to, so a
+# desktop in dark mode still reads `(prefers-color-scheme: light)`, where stock
+# Firefox on that machine reads dark (measured 2026-09-18, headed on a private
+# Xvfb with GTK_THEME=Adwaita:dark: stock dark, camoufox light, camoufox with
+# these defaults dark). "no-override" is Playwright's own opt-out: it sends no
+# emulation at all and the browser answers from the host.
+STOCK_MEDIA_DEFAULTS = {
+    'color_scheme': 'no-override',
+    'reduced_motion': 'no-override',
+    'forced_colors': 'no-override',
+    'contrast': 'no-override',
+}
+
+
+def attach_stock_media_defaults(target: Any) -> Any:
+    """Default new_page()/new_context() to the host's own media features.
+
+    Explicit color_scheme= / reduced_motion= / forced_colors= / contrast= from
+    the caller always wins; this only replaces Playwright's silent defaults.
+    """
+    for name in ('new_page', 'new_context'):
+        original = getattr(target, name, None)
+        if original is None:
+            continue
+
+        def wrap(original: Any) -> Any:
+            @wraps(original)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                for option, value in STOCK_MEDIA_DEFAULTS.items():
+                    kwargs.setdefault(option, value)
+                # Works for both sync and async: async returns the coroutine
+                # unawaited, and the caller awaits it as usual.
+                return original(*args, **kwargs)
+
+            return wrapper
+
+        setattr(target, name, wrap(original))
+    return target
+
+
+def attach_desktop_only_warning(target: Any) -> Any:
+    """Warn when new_page()/new_context() asks for is_mobile: Camoufox only has
+    desktop identities, and Juggler ignores the option (TargetRegistry.js)."""
+    for name in ('new_page', 'new_context'):
+        original = getattr(target, name, None)
+        if original is None:
+            continue
+
+        def wrap(original: Any) -> Any:
+            @wraps(original)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                if kwargs.get('is_mobile'):
+                    LeakWarning.warn('is_mobile')
+                return original(*args, **kwargs)
+
+            return wrapper
+
+        setattr(target, name, wrap(original))
+    return target
 
 
 def attach_no_viewport_default(target: Any) -> Any:
@@ -800,14 +916,6 @@ def resolve_verstr(executable_path: Optional[Path] = None) -> str:
         except OSError:
             pass
     return installed_verstr()
-
-
-def browser_ff_version(browser: Any) -> Optional[str]:
-    """The Firefox major version a running browser reports ("152.0.4-beta.31"
-    -> "152"), for a context identity that must claim the engine it runs on.
-    None when the version is not of that shape."""
-    major = str(getattr(browser, 'version', '') or '').split('.', 1)[0]
-    return major if major.isdigit() else None
 
 
 def launch_options(
@@ -1011,7 +1119,7 @@ def launch_options(
     _user_set_dnt = 'navigator.doNotTrack' in config
     _user_set_gpc = 'navigator.globalPrivacyControl' in config
     _user_set_accept_encoding = 'headers.Accept-Encoding' in config
-    _user_set_noise_seeds = {k for k in ('audio:seed', 'canvas:seed') if k in config}
+    _user_set_audio_seed = 'audio:seed' in config
 
     # The salt that makes every seeded draw belong to this identity (see
     # fingerprints.identity_salt): stable when the caller pinned the identity
@@ -1201,7 +1309,11 @@ def launch_options(
                 # OS base is claimed
                 native=(target_os in ('mac', 'win') and _host_os_key() == target_os),
             )
-        except Exception:
+        except (OSError, ValueError) as e:
+            FallbackWarning.warn(
+                'Drawing the font list', f"every font fonts.json lists for {target_os}", e,
+                config.get('navigator.userAgent'),
+            )
             update_fonts(config, target_os)
 
     # Draw the identity's media devices (counts + OS-style labels/groups from
@@ -1242,13 +1354,6 @@ def launch_options(
             firefox_user_prefs.setdefault('widget.non-native-theme.win.scrollbar.use-system-size', False)
         elif target_os == 'mac':
             firefox_user_prefs.setdefault('widget.non-native-theme.scrollbar.style', 1)
-
-    # CSS transitions and animations run in real time, as in stock Firefox.
-    # no-css-animations.patch finishes them instantly unless this is set, and a
-    # page reads that back in one line: a 2 s width transition sampled at 0.5 s
-    # is 10px (its start value) here and ~60px in stock (measured 2026-09-24).
-    # DataDome keyed on it (daijro/camoufox#450).
-    config.setdefault('disableInstantAnimations', True)
 
     # Answers that come from the HOST rather than the claimed OS. When the two
     # differ, each is set to what stock Firefox 152.0.4 reports on that OS
@@ -1332,6 +1437,19 @@ def launch_options(
     if _host_os_key() == 'lin':
         firefox_user_prefs.setdefault('gfx.font_rendering.fallback.async', False)
 
+    # Storage quota, from the host's own disk. A page reads the group limit
+    # through navigator.storage.estimate().quota; see
+    # _stock_profile_disk_capacity_kb for how Gecko derives it. Playwright's
+    # profile is a throwaway directory under the system temp dir, which on a
+    # tmpfs /tmp is a RAM-sized volume, so leaving Gecko to measure it reports a
+    # disk this machine does not have. Pinning the limit instead -- camoufox.cfg
+    # used to set 50 GiB, which is exactly nsRFPService::GetSpoofedStorageLimit()
+    # -- reports 10 GiB on every host, including hosts whose real disk is far
+    # smaller and whose stock Firefox therefore reports capacity / 10.
+    _quota_limit_kb = _stock_profile_disk_capacity_kb()
+    if _quota_limit_kb:
+        firefox_user_prefs.setdefault(_QUOTA_FIXED_LIMIT_PREF, _quota_limit_kb)
+
     # Bundled fonts: on macOS and Windows the package's font bundle is
     # registered on top of the system fonts, and a bundled face of a family
     # the system also has (Papyrus, Helvetica, ...) wins the lookup with
@@ -1394,29 +1512,17 @@ def launch_options(
     if not _user_set_accept_encoding:
         config.pop('headers.Accept-Encoding', None)
 
-    # Set random seeds for fingerprint noise (per launch)
-    # Glyph-advance perturbation is OFF by default (seed 0): it moves every
-    # measured text width off the value the same font produces on a real
-    # machine (measured 2026-09-14: +1 px per ~100 glyphs, fractional deltas
-    # on every measureText), which is a fingerprint no stock Firefox emits.
-    # Pass fonts:spacing_seed explicitly to opt back in.
-    set_into(config, 'fonts:spacing_seed', 0)
-    # Web Audio noise is OFF by default (seed 0) for the same reason: stock
-    # Firefox 152 renders the standard OfflineAudioContext probe to exactly the
-    # same value on every machine (75.83002272993326, measured 2026-09-24 on
-    # Linux and on Windows, and this build unseeded), so any noise makes the
-    # identity one no real Firefox is. The unseeded value is also stable across
-    # sessions, which is what #442/#765 asked of a returning device. Pass
-    # audio:seed explicitly to opt back in.
-    if 'audio:seed' not in _user_set_noise_seeds:
+    # Web Audio noise is OFF by default (seed 0): stock Firefox 152 renders the
+    # standard OfflineAudioContext probe to exactly the same value on every
+    # machine (75.83002272993326, measured 2026-09-24 on Linux and on Windows,
+    # and this build unseeded), so any noise makes the identity one no real
+    # Firefox is. The unseeded value is also stable across sessions, which is
+    # what #442/#765 asked of a returning device. Pass audio:seed explicitly to
+    # opt back in. There is no canvas seed: the browser adds no canvas noise
+    # (#528), and no glyph-spacing noise either (ci/tribal-rules.yml:
+    # no-glyph-spacing-noise).
+    if not _user_set_audio_seed:
         config['audio:seed'] = 0
-    # The canvas noise seed follows the identity: a returning "same device"
-    # must reproduce its canvas hashes (#442/#765); never 0 (0 disables it).
-    # A preset draws its own random seed; it is replaced here too so a pinned
-    # preset reproduces it, but a seed the caller set is kept.
-    _ident = identity_seed(config, _identity_salt)
-    if 'canvas:seed' not in _user_set_noise_seeds:
-        config['canvas:seed'] = ((_ident * 40503 + 12345) & 0xFFFFFFFF) or 1
 
     # Set geolocation
     if geoip:
@@ -1515,10 +1621,13 @@ def launch_options(
             config['voices'] = _generate_random_voice_subset(
                 os_name_v, voice_locale, seed=identity_seed(config, _identity_salt)
             )
-        except Exception:
+        except (OSError, ValueError, KeyError) as e:
             # An empty list still blocks the host's voices (see below), so a
             # generation failure degrades to "no voices" rather than "all of
             # the host's".
+            FallbackWarning.warn(
+                'Drawing the speech voices', 'no speech voices', e, config.get('navigator.userAgent')
+            )
             config['voices'] = []
 
     # Pin the block explicitly instead of relying on a non-empty list to imply
@@ -1552,54 +1661,33 @@ def launch_options(
     if disable_coop:
         LeakWarning.warn('disable_coop', i_know_what_im_doing)
         firefox_user_prefs['browser.tabs.remote.useCrossOriginOpenerPolicy'] = False
+    # A persistent context takes its context options here.
+    if launch_options.get('is_mobile'):
+        LeakWarning.warn('is_mobile', i_know_what_im_doing)
 
     # Drop values the source supplied that this identity cannot keep, before the
     # WebGL pool below defers to them (a preset's own GPU pair wins over
-    # sampling). Here rather than earlier because the check reads the core count
-    # and the screen, and both are replaced above: a preset's cores by the
-    # host's, its screen by the display clamp.
+    # sampling). Here, not earlier, because the check reads the core count and
+    # the screen, which the host core count and the display clamp replace.
     coherence.drop_incoherent_source_values(config, target_os)
 
-    # Allow allow_webgl parameter for backwards compatibility
-    if block_webgl or launch_options.pop('allow_webgl', True) is False:
+    if block_webgl:
         firefox_user_prefs['webgl.disabled'] = True
         LeakWarning.warn('block_webgl', i_know_what_im_doing)
     else:
-        # If the user has provided a specific WebGL vendor/renderer pair, use it
+        # A pair the caller named, or the preset's own GPU, keeps its name and
+        # gets that device's recorded parameters. webgl_for_gpu raises for a GPU
+        # neither fpgen nor webgl_data.db has: the caller asked for something
+        # that does not exist.
         if webgl_config:
             webgl_fp = webgl_for_gpu(target_os, *webgl_config, seed=identity_seed(config, _identity_salt))
         elif config.get('webGl:vendor') and config.get('webGl:renderer'):
-            # Preset already set vendor/renderer: that GPU's recorded parameters
-            try:
-                webgl_fp = webgl_for_gpu(target_os, config['webGl:vendor'], config['webGl:renderer'], seed=identity_seed(config, _identity_salt))
-            except ValueError:
-                # Neither fpgen nor webgl_data.db has the pair. No bundled preset
-                # lands here (test_shipped_data holds each to webgl_gpus), but a
-                # caller's own preset dict can name anything -- e.g. a Windows
-                # preset claiming "ANGLE (Unknown, Adreno (TM) 650 ...)", a phone
-                # GPU -- and raising would fail launch_options() over a pair the
-                # caller had no way to check.
-                #
-                # There is no way to keep the named GPU: the parameters, extension
-                # list and shader precisions all have to come from a real recorded
-                # device, and there is none for an unknown renderer. So draw a GPU
-                # that fits the screen and let it replace the pair -- the identity
-                # loses the preset's GPU string but stays internally coherent,
-                # which is the property that matters to a page reading both.
-                webgl_fp = sample_webgl_for_screen(
-                    target_os, config.get('screen.width'), config.get('screen.height'),
-                    seed=identity_seed(config, _identity_salt),
-                    cores=config.get('navigator.hardwareConcurrency'),
-                )
-                # merge_into does not overwrite keys that are already set, and the
-                # preset set these two. Drop them, or the page would read the
-                # preset's renderer string with another device's parameters,
-                # extensions and shader precisions behind it -- a mismatch louder
-                # than the unknown GPU we are replacing.
-                config.pop('webGl:vendor', None)
-                config.pop('webGl:renderer', None)
+            webgl_fp = webgl_for_gpu(
+                target_os, config['webGl:vendor'], config['webGl:renderer'],
+                seed=identity_seed(config, _identity_salt),
+            )
         else:
-            # Synthetic path: keep the GPU coherent with the screen BrowserForge
+            # Synthetic path: keep the GPU coherent with the screen fpgen
             # already picked. Sampling the two independently yields pairs no
             # real machine ships -- a discrete desktop GPU behind a 1024x600
             # panel -- which consistency checks read as masking (#729).

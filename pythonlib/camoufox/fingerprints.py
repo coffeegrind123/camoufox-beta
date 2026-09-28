@@ -7,11 +7,13 @@ import unicodedata
 import warnings
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from random import Random, choice, randint, randrange
+from random import Random, choice, randrange
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
+from camoufox._warnings import FallbackWarning
+from camoufox.ip import valid_ipv4, validate_ip
 from camoufox.pkgman import load_yaml
-from camoufox.webgl import sample_webgl
+from camoufox.webgl_db import database_gpus, sample_webgl
 
 # Load the fpgen mapping file
 FPGEN_DATA = load_yaml('fpgen.yml')
@@ -29,12 +31,9 @@ _FP_GENERATOR = None
 def _generator():
     global _FP_GENERATOR
     if _FP_GENERATOR is None:
-        from .fpgen_model import ensure_fpgen_model
+        from .fpgen_model import load_fpgen
 
-        ensure_fpgen_model()
-        from fpgen import Generator
-
-        _FP_GENERATOR = Generator()
+        _FP_GENERATOR = load_fpgen().Generator()
     return _FP_GENERATOR
 
 
@@ -133,177 +132,20 @@ def _load_os_fonts() -> Dict[str, List[str]]:
 # the stock CJK families; macOS Sonoma; Ubuntu and its Mint variant),
 # intersected with fonts.json so only names the bundle can
 # render are listed (Sonoma's PingFang / Kefa / Hiragino families are in the real
-# base but not bundled, so they are absent here). Regenerate together with
-# fonts.json: `python3 scripts/gen-fonts-json.py --print-bases`.
+# base but not bundled, so they are absent here). They live in essential-fonts.json,
+# which the TypeScript launcher reads too; regenerate it together with fonts.json:
+# `python3 scripts/gen-fonts-json.py --print-bases`.
 #
 # Windows: the seven GDI-substitution names (Courier, Helvetica, MS Sans Serif,
 # MS Serif, Roman, Small Fonts, Times) and the six Light/Semilight names have no
 # file of their own; bundle/fontconfig/windows/fonts.conf rewrites each to its
 # bundled target unconditionally, so they MUST stay in this always-reported set
 # (an identity that did not report Helvetica would still render it otherwise).
-_ESSENTIAL_FONTS_MACOS = [
-    'Academy Engraved LET', 'Al Bayan', 'Al Nile', 'Al Tarikh', 'American Typewriter', 'American Typewriter Semibold',
-    'Andale Mono', 'Apple Braille', 'Apple Chancery', 'Apple Color Emoji', 'Apple SD Gothic Neo',
-    'Apple SD Gothic Neo ExtraBold', 'Apple Symbols', 'AppleGothic', 'AppleMyungjo', 'Arial',
-    'Arial Black', 'Arial Hebrew', 'Arial Hebrew Scholar', 'Arial Narrow', 'Arial Rounded MT Bold',
-    'Arial Unicode MS', 'Athelas', 'Avenir', 'Avenir Black', 'Avenir Black Oblique', 'Avenir Book',
-    'Avenir Heavy', 'Avenir Light', 'Avenir Medium', 'Avenir Next', 'Avenir Next Demi Bold',
-    'Avenir Next Heavy', 'Avenir Next Medium', 'Avenir Next Ultra Light', 'Ayuthaya', 'Baghdad',
-    'Bangla MN', 'Bangla Sangam MN', 'Baskerville', 'Beirut', 'Big Caslon', 'Bodoni 72', 'Bodoni 72 Oldstyle',
-    'Bodoni 72 Smallcaps', 'Bodoni Ornaments', 'Bradley Hand', 'Brush Script MT', 'Chalkboard',
-    'Chalkboard SE', 'Chalkduster', 'Charter', 'Charter Black', 'Cochin', 'Comic Sans MS',
-    'Copperplate', 'Corsiva Hebrew', 'Courier', 'Courier New', 'DIN Alternate', 'DIN Condensed',
-    'Damascus', 'DecoType Naskh', 'Devanagari MT', 'Devanagari Sangam MN', 'Didot', 'Diwan Kufi',
-    'Diwan Thuluth', 'Euphemia UCAS', 'Farah', 'Farisi', 'Futura', 'Futura Bold', 'GB18030 Bitmap',
-    'Galvji', 'Geeza Pro', 'Geneva', 'Georgia', 'Gill Sans', 'Grantha Sangam MN', 'Gujarati MT',
-    'Gujarati Sangam MN', 'Gurmukhi MN', 'Gurmukhi MT', 'Gurmukhi Sangam MN', 'Heiti SC', 'Heiti TC',
-    'Helvetica', 'Helvetica Neue', 'Hiragino Kaku Gothic Pro', 'Hiragino Kaku Gothic Std',
-    'Hiragino Kaku Gothic StdN', 'Hiragino Maru Gothic Pro', 'Hiragino Maru Gothic ProN', 'Hiragino Maru Gothic ProN W4',
-    'Hiragino Mincho Pro', 'Hiragino Mincho ProN', 'Hiragino Mincho ProN W3', 'Hiragino Mincho ProN W6',
-    'Hiragino Sans', 'Hiragino Sans GB', 'Hiragino Sans GB W3', 'Hiragino Sans GB W6', 'Hiragino Sans W0',
-    'Hiragino Sans W1', 'Hiragino Sans W2', 'Hiragino Sans W3', 'Hiragino Sans W4', 'Hiragino Sans W5',
-    'Hiragino Sans W6', 'Hiragino Sans W7', 'Hiragino Sans W8', 'Hiragino Sans W9', 'Hoefler Text',
-    'Hoefler Text Ornaments', 'ITF Devanagari', 'ITF Devanagari Marathi', 'Impact', 'InaiMathi',
-    'InaiMathi Bold', 'Iowan Old Style', 'Kailasa', 'Kannada MN', 'Kannada Sangam MN', 'Khmer MN',
-    'Khmer Sangam MN', 'Kohinoor Bangla', 'Kohinoor Devanagari', 'Kohinoor Devanagari Medium',
-    'Kohinoor Gujarati', 'Kohinoor Telugu', 'Kokonor', 'Krungthep', 'KufiStandardGK', 'Lao MN',
-    'Lao Sangam MN', 'Lucida Grande', 'Luminari', 'Malayalam MN', 'Malayalam Sangam MN', 'Marker Felt',
-    'Menlo', 'Microsoft Sans Serif', 'Mishafi', 'Mishafi Gold', 'Monaco', 'Mshtakan', 'MuktaMahee Bold',
-    'MuktaMahee ExtraBold', 'MuktaMahee ExtraLight', 'MuktaMahee Light', 'MuktaMahee Medium',
-    'MuktaMahee Regular', 'MuktaMahee SemiBold', 'Muna', 'Myanmar MN', 'Myanmar Sangam MN',
-    'Nadeem', 'New Peninim MT', 'Noteworthy', 'Noto Nastaliq Urdu', 'Noto Sans Adlam', 'Noto Sans Armenian',
-    'Noto Sans Armenian Blk', 'Noto Sans Armenian ExtBd', 'Noto Sans Armenian ExtLt', 'Noto Sans Armenian Light',
-    'Noto Sans Armenian Med', 'Noto Sans Armenian SemBd', 'Noto Sans Armenian Thin', 'Noto Sans Avestan',
-    'Noto Sans Bamum', 'Noto Sans Bassa Vah', 'Noto Sans Batak', 'Noto Sans Bhaiksuki', 'Noto Sans Buginese',
-    'Noto Sans Buhid', 'Noto Sans Canadian Aboriginal Regular', 'Noto Sans Carian', 'Noto Sans CaucAlban',
-    'Noto Sans Chakma', 'Noto Sans Cham', 'Noto Sans Coptic', 'Noto Sans Cuneiform', 'Noto Sans Cypriot',
-    'Noto Sans Duployan', 'Noto Sans EgyptHiero', 'Noto Sans Elbasan', 'Noto Sans Glagolitic',
-    'Noto Sans Gothic', 'Noto Sans Gunjala Gondi', 'Noto Sans HanifiRohg', 'Noto Sans Hanunoo',
-    'Noto Sans Hatran', 'Noto Sans ImpAramaic', 'Noto Sans InsPahlavi', 'Noto Sans InsParthi',
-    'Noto Sans Javanese', 'Noto Sans Kaithi', 'Noto Sans Kannada', 'Noto Sans Kannada Black',
-    'Noto Sans Kannada ExtraBold', 'Noto Sans Kannada ExtraLight', 'Noto Sans Kannada Light',
-    'Noto Sans Kannada Medium', 'Noto Sans Kannada SemiBold', 'Noto Sans Kannada Thin', 'Noto Sans Kayah Li',
-    'Noto Sans Kharoshthi', 'Noto Sans Khojki', 'Noto Sans Khudawadi', 'Noto Sans Lepcha',
-    'Noto Sans Limbu', 'Noto Sans Linear A', 'Noto Sans Linear B', 'Noto Sans Lisu', 'Noto Sans Lycian',
-    'Noto Sans Lydian', 'Noto Sans Mahajani', 'Noto Sans Mandaic', 'Noto Sans Manichaean',
-    'Noto Sans Marchen', 'Noto Sans Masaram Gondi', 'Noto Sans Mende Kikakui', 'Noto Sans Meroitic',
-    'Noto Sans Miao', 'Noto Sans Modi', 'Noto Sans Mongolian', 'Noto Sans Mro', 'Noto Sans Multani',
-    'Noto Sans Myanmar', 'Noto Sans Myanmar Blk', 'Noto Sans Myanmar ExtBd', 'Noto Sans Myanmar ExtLt',
-    'Noto Sans Myanmar Light', 'Noto Sans Myanmar Med', 'Noto Sans Myanmar SemBd', 'Noto Sans Myanmar Thin',
-    'Noto Sans NKo', 'Noto Sans Nabataean', 'Noto Sans Newa', 'Noto Sans Ol Chiki', 'Noto Sans Old Italic',
-    'Noto Sans Old Permic', 'Noto Sans Old Turkic', 'Noto Sans OldHung', 'Noto Sans OldNorArab',
-    'Noto Sans OldSouArab', 'Noto Sans Oriya', 'Noto Sans Osage', 'Noto Sans Osmanya', 'Noto Sans Pahawh Hmong',
-    'Noto Sans Palmyrene', 'Noto Sans PhagsPa', 'Noto Sans Phoenician', 'Noto Sans PsaPahlavi',
-    'Noto Sans Rejang', 'Noto Sans Samaritan', 'Noto Sans Saurashtra', 'Noto Sans Sharada',
-    'Noto Sans Siddham', 'Noto Sans SoraSomp', 'Noto Sans Sundanese', 'Noto Sans Syloti Nagri',
-    'Noto Sans Syriac', 'Noto Sans Tagalog', 'Noto Sans Tagbanwa', 'Noto Sans Tai Le', 'Noto Sans Tai Tham',
-    'Noto Sans Tai Viet', 'Noto Sans Takri', 'Noto Sans Thaana', 'Noto Sans Tifinagh', 'Noto Sans Tirhuta',
-    'Noto Sans Ugaritic', 'Noto Sans Vai', 'Noto Sans Wancho', 'Noto Sans Yi', 'Noto Sans Zawgyi',
-    'Noto Sans Zawgyi Blk', 'Noto Sans Zawgyi ExtBd', 'Noto Sans Zawgyi ExtLt', 'Noto Sans Zawgyi Light',
-    'Noto Sans Zawgyi Med', 'Noto Sans Zawgyi SemBd', 'Noto Sans Zawgyi Thin', 'Noto Serif Ahom',
-    'Noto Serif Balinese', 'Noto Serif Hmong Nyiakeng', 'Noto Serif Myanmar', 'Noto Serif Myanmar Blk',
-    'Noto Serif Myanmar ExtBd', 'Noto Serif Myanmar ExtLt', 'Noto Serif Myanmar Light', 'Noto Serif Myanmar Med',
-    'Noto Serif Myanmar SemBd', 'Noto Serif Myanmar Thin', 'Noto Serif Yezidi', 'Optima', 'Oriya MN',
-    'Oriya Sangam MN', 'PT Mono', 'PT Sans', 'PT Sans Caption', 'PT Sans Narrow', 'PT Serif',
-    'PT Serif Caption', 'Palatino', 'Papyrus', 'Party LET', 'Phosphate', 'PingFang HK', 'PingFang SC',
-    'PingFang TC', 'Plantagenet Cherokee', 'Raanana', 'Rockwell', 'STIX Two Math', 'STIX Two Math Regular',
-    'STIX Two Text', 'STIX Two Text Regular', 'STIXGeneral', 'STIXIntegralsD', 'STIXIntegralsSm',
-    'STIXIntegralsUp', 'STIXIntegralsUpD', 'STIXIntegralsUpSm', 'STIXNonUnicode', 'STIXSizeFiveSym',
-    'STIXSizeFourSym', 'STIXSizeOneSym', 'STIXSizeThreeSym', 'STIXSizeTwoSym', 'STIXVariants',
-    'STSong', 'Sana', 'Sathu', 'Savoye LET', 'Shree Devanagari 714', 'SignPainter-HouseScript',
-    'Silom', 'Sinhala MN', 'Sinhala Sangam MN', 'Skia', 'Snell Roundhand', 'Songti SC', 'Songti TC',
-    'Sukhumvit Set', 'Superclarendon', 'Symbol', 'System Font', 'Tahoma', 'Tamil MN', 'Tamil Sangam MN',
-    'Telugu MN', 'Telugu Sangam MN', 'Thonburi', 'Times', 'Times New Roman', 'Trattatello',
-    'Trebuchet MS', 'Verdana', 'Waseem', 'Webdings', 'Wingdings', 'Wingdings 2', 'Wingdings 3',
-    'Zapf Dingbats', 'Zapfino',
-]
-_ESSENTIAL_FONTS_WINDOWS = [
-    'Arial', 'Arial Black', 'Bahnschrift', 'Calibri', 'Calibri Light', 'Cambria', 'Cambria Math',
-    'Candara', 'Candara Light', 'Comic Sans MS', 'Consolas', 'Constantia', 'Corbel', 'Corbel Light',
-    'Courier', 'Courier New', 'Ebrima', 'Franklin Gothic Medium', 'Gabriola', 'Gadugi', 'Georgia',
-    'Helvetica', 'Impact', 'Ink Free', 'Javanese Text', 'Leelawadee UI', 'Leelawadee UI Semilight',
-    'Lucida Console', 'Lucida Sans Unicode', 'MS Gothic', 'MS PGothic', 'MS Sans Serif', 'MS Serif',
-    'MS UI Gothic', 'MV Boli', 'Malgun Gothic', 'Malgun Gothic Semilight', 'Marlett', 'Microsoft Himalaya',
-    'Microsoft JhengHei', 'Microsoft JhengHei Light', 'Microsoft JhengHei UI', 'Microsoft JhengHei UI Light',
-    'Microsoft New Tai Lue', 'Microsoft PhagsPa', 'Microsoft Sans Serif', 'Microsoft Tai Le',
-    'Microsoft YaHei', 'Microsoft YaHei Light', 'Microsoft YaHei UI', 'Microsoft YaHei UI Light',
-    'Microsoft Yi Baiti', 'MingLiU-ExtB', 'MingLiU_HKSCS-ExtB', 'MingLiU_MSCS-ExtB', 'Mongolian Baiti',
-    'Myanmar Text', 'NSimSun', 'Nirmala Text', 'Nirmala Text Semilight', 'Nirmala UI', 'Nirmala UI Semilight',
-    'PMingLiU-ExtB', 'Palatino Linotype', 'Roman', 'Sans Serif Collection', 'Segoe Fluent Icons',
-    'Segoe MDL2 Assets', 'Segoe Print', 'Segoe Script', 'Segoe UI', 'Segoe UI Black', 'Segoe UI Emoji',
-    'Segoe UI Historic', 'Segoe UI Light', 'Segoe UI Semibold', 'Segoe UI Semilight', 'Segoe UI Symbol',
-    'Segoe UI Variable', 'Segoe UI Variable Display', 'Segoe UI Variable Small', 'Segoe UI Variable Text',
-    'SimSun', 'SimSun-ExtB', 'Sitka Banner', 'Sitka Display', 'Sitka Heading', 'Sitka Small',
-    'Sitka Subheading', 'Sitka Text', 'Small Fonts', 'Sylfaen', 'Symbol', 'Tahoma', 'Times',
-    'Times New Roman', 'Trebuchet MS', 'Twemoji Mozilla', 'Verdana', 'Webdings', 'Wingdings',
-    'Yu Gothic', 'Yu Gothic Light', 'Yu Gothic Medium', 'Yu Gothic UI', 'Yu Gothic UI Light',
-    'Yu Gothic UI Semibold', 'Yu Gothic UI Semilight', '宋体', '微軟正黑體', '微軟正黑體 Light', '微软雅黑',
-    '微软雅黑 Light', '新宋体', '新細明體-ExtB', '游ゴシック', '游ゴシック Light', '游ゴシック Medium', '細明體-ExtB', '細明體_HKSCS-ExtB',
-    '細明體_MSCS-ExtB', '맑은 고딕', '맑은 고딕 Semilight', 'ＭＳ ゴシック', 'ＭＳ Ｐゴシック',
-]
-_ESSENTIAL_FONTS_LINUX = [
-    'AR PL UKai CN', 'AR PL UKai HK', 'AR PL UKai TW', 'AR PL UKai TW MBE', 'AR PL UMing CN',
-    'AR PL UMing HK', 'AR PL UMing TW', 'AR PL UMing TW MBE', 'Arial', 'Arial Narrow', 'Avant Garde',
-    'Bookman Old Style', 'C059', 'Calibri', 'Cambria', 'Century Schoolbook', 'Courier', 'Courier New',
-    'D050000L', 'DejaVu Sans', 'DejaVu Sans Mono', 'DejaVu Serif', 'Droid Sans Fallback', 'Helvetica',
-    'Helvetica Narrow', 'Liberation Mono', 'Liberation Sans', 'Liberation Sans Narrow', 'Liberation Serif',
-    'Nimbus Mono PS', 'Nimbus Roman', 'Nimbus Sans', 'Nimbus Sans Narrow', 'Noto Color Emoji',
-    'Noto Kufi Arabic', 'Noto Looped Lao', 'Noto Looped Lao Bold', 'Noto Looped Lao Regular',
-    'Noto Looped Thai', 'Noto Looped Thai Bold', 'Noto Looped Thai Regular', 'Noto Mono', 'Noto Music',
-    'Noto Naskh Arabic', 'Noto Nastaliq Urdu', 'Noto Rashi Hebrew', 'Noto Sans', 'Noto Sans Adlam',
-    'Noto Sans Adlam Unjoined', 'Noto Sans AnatoHiero', 'Noto Sans Anatolian Hieroglyphs',
-    'Noto Sans Arabic', 'Noto Sans Armenian', 'Noto Sans Avestan', 'Noto Sans Balinese', 'Noto Sans Bamum',
-    'Noto Sans Bassa Vah', 'Noto Sans Batak', 'Noto Sans Bengali', 'Noto Sans Bhaiksuki', 'Noto Sans Brahmi',
-    'Noto Sans Buginese', 'Noto Sans Buhid', 'Noto Sans CJK HK', 'Noto Sans CJK JP', 'Noto Sans CJK KR',
-    'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans CanAborig', 'Noto Sans Canadian Aboriginal',
-    'Noto Sans Carian', 'Noto Sans CaucAlban', 'Noto Sans Caucasian Albanian', 'Noto Sans Chakma',
-    'Noto Sans Cham', 'Noto Sans Cherokee', 'Noto Sans Coptic', 'Noto Sans Cuneiform', 'Noto Sans Cypriot',
-    'Noto Sans Deseret', 'Noto Sans Devanagari', 'Noto Sans Display', 'Noto Sans Duployan',
-    'Noto Sans EgyptHiero', 'Noto Sans Egyptian Hieroglyphs', 'Noto Sans Elbasan', 'Noto Sans Elymaic',
-    'Noto Sans Ethiopic', 'Noto Sans Georgian', 'Noto Sans Glagolitic', 'Noto Sans Gothic',
-    'Noto Sans Grantha', 'Noto Sans Gujarati', 'Noto Sans Gunjala Gondi', 'Noto Sans Gurmukhi',
-    'Noto Sans Hanifi Rohingya', 'Noto Sans Hanunoo', 'Noto Sans Hatran', 'Noto Sans Hebrew',
-    'Noto Sans ImpAramaic', 'Noto Sans Imperial Aramaic', 'Noto Sans Indic Siyaq Numbers',
-    'Noto Sans InsPahlavi', 'Noto Sans InsParthi', 'Noto Sans Inscriptional Pahlavi', 'Noto Sans Inscriptional Parthian',
-    'Noto Sans Javanese', 'Noto Sans Kaithi', 'Noto Sans Kannada', 'Noto Sans Kayah Li', 'Noto Sans Kharoshthi',
-    'Noto Sans Khmer', 'Noto Sans Khojki', 'Noto Sans Khudawadi', 'Noto Sans Lao', 'Noto Sans Lepcha',
-    'Noto Sans Limbu', 'Noto Sans Linear A', 'Noto Sans Linear B', 'Noto Sans Lisu', 'Noto Sans Lycian',
-    'Noto Sans Lydian', 'Noto Sans Mahajani', 'Noto Sans Malayalam', 'Noto Sans Mandaic', 'Noto Sans Manichaean',
-    'Noto Sans Marchen', 'Noto Sans Masaram Gondi', 'Noto Sans Math', 'Noto Sans Mayan Numerals',
-    'Noto Sans Medefaidrin', 'Noto Sans Meetei Mayek', 'Noto Sans Mende Kikakui', 'Noto Sans Meroitic',
-    'Noto Sans Miao', 'Noto Sans Modi', 'Noto Sans Mongolian', 'Noto Sans Mono', 'Noto Sans Mono CJK HK',
-    'Noto Sans Mono CJK JP', 'Noto Sans Mono CJK KR', 'Noto Sans Mono CJK SC', 'Noto Sans Mono CJK TC',
-    'Noto Sans Mro', 'Noto Sans Multani', 'Noto Sans Myanmar', 'Noto Sans NKo', 'Noto Sans Nabataean',
-    'Noto Sans New Tai Lue', 'Noto Sans Newa', 'Noto Sans Nushu', 'Noto Sans Ogham', 'Noto Sans Ol Chiki',
-    'Noto Sans Old Hungarian', 'Noto Sans Old Italic', 'Noto Sans Old North Arabian', 'Noto Sans Old Permic',
-    'Noto Sans Old Persian', 'Noto Sans Old Sogdian', 'Noto Sans Old South Arabian', 'Noto Sans Old Turkic',
-    'Noto Sans OldHung', 'Noto Sans OldNorArab', 'Noto Sans OldSouArab', 'Noto Sans Oriya',
-    'Noto Sans Osage', 'Noto Sans Osmanya', 'Noto Sans Pahawh Hmong', 'Noto Sans Palmyrene',
-    'Noto Sans Pau Cin Hau', 'Noto Sans PhagsPa', 'Noto Sans Phoenician', 'Noto Sans PsaPahlavi',
-    'Noto Sans Psalter Pahlavi', 'Noto Sans Rejang', 'Noto Sans Runic', 'Noto Sans Samaritan',
-    'Noto Sans Saurashtra', 'Noto Sans Sharada', 'Noto Sans Shavian', 'Noto Sans Siddham',
-    'Noto Sans SignWrit', 'Noto Sans SignWriting', 'Noto Sans Sinhala', 'Noto Sans Sogdian',
-    'Noto Sans Sora Sompeng', 'Noto Sans Soyombo', 'Noto Sans Sundanese', 'Noto Sans Syloti Nagri',
-    'Noto Sans Symbols', 'Noto Sans Symbols2', 'Noto Sans Syriac', 'Noto Sans Tagalog', 'Noto Sans Tagbanwa',
-    'Noto Sans Tai Le', 'Noto Sans Tai Tham', 'Noto Sans Tai Viet', 'Noto Sans Takri', 'Noto Sans Tamil',
-    'Noto Sans Tamil Supplement', 'Noto Sans Telugu', 'Noto Sans Thaana', 'Noto Sans Thai',
-    'Noto Sans Tifinagh', 'Noto Sans Tifinagh APT', 'Noto Sans Tifinagh Adrar', 'Noto Sans Tifinagh Agraw Imazighen',
-    'Noto Sans Tifinagh Ahaggar', 'Noto Sans Tifinagh Air', 'Noto Sans Tifinagh Azawagh', 'Noto Sans Tifinagh Ghat',
-    'Noto Sans Tifinagh Hawad', 'Noto Sans Tifinagh Rhissa Ixa', 'Noto Sans Tifinagh SIL',
-    'Noto Sans Tifinagh Tawellemmet', 'Noto Sans Tirhuta', 'Noto Sans Ugaritic', 'Noto Sans Vai',
-    'Noto Sans Wancho', 'Noto Sans Warang Citi', 'Noto Sans Yi', 'Noto Sans Zanabazar', 'Noto Sans Zanabazar Square',
-    'Noto Serif', 'Noto Serif Ahom', 'Noto Serif Armenian', 'Noto Serif Balinese', 'Noto Serif Bengali',
-    'Noto Serif CJK HK', 'Noto Serif CJK JP', 'Noto Serif CJK KR', 'Noto Serif CJK SC', 'Noto Serif CJK TC',
-    'Noto Serif Devanagari', 'Noto Serif Display', 'Noto Serif Dogra', 'Noto Serif Ethiopic',
-    'Noto Serif Georgian', 'Noto Serif Grantha', 'Noto Serif Gujarati', 'Noto Serif Gurmukhi',
-    'Noto Serif Hebrew', 'Noto Serif Hmong Nyiakeng', 'Noto Serif Kannada', 'Noto Serif Khmer',
-    'Noto Serif Khojki', 'Noto Serif Lao', 'Noto Serif Malayalam', 'Noto Serif Myanmar', 'Noto Serif Sinhala',
-    'Noto Serif Tamil', 'Noto Serif Tamil Slanted', 'Noto Serif Tangut', 'Noto Serif Telugu',
-    'Noto Serif Thai', 'Noto Serif Tibetan', 'Noto Serif Yezidi', 'Noto Traditional Nushu',
-    'OpenSymbol', 'P052', 'Palatino', 'Palatino Linotype', 'Standard Symbols PS', 'Symbol',
-    'Times', 'Times New Roman', 'URW Bookman', 'URW Gothic', 'Ubuntu', 'Ubuntu Mono', 'Ubuntu Sans',
-    'Ubuntu Sans Mono', 'Z003', 'Zapf Chancery',
-]
+with open(os.path.join(os.path.dirname(__file__), 'essential-fonts.json'), 'rb') as _f:
+    _ESSENTIAL = json.loads(_f.read())
+_ESSENTIAL_FONTS_WINDOWS: List[str] = _ESSENTIAL['win']
+_ESSENTIAL_FONTS_MACOS: List[str] = _ESSENTIAL['mac']
+_ESSENTIAL_FONTS_LINUX: List[str] = _ESSENTIAL['lin']
 
 # OS-version variants of the base, drawn ALL-OR-NOTHING on top of the essential
 # core with the real-world share of that version (the manifest's base weights). A
@@ -403,7 +245,10 @@ def _load_font_groups() -> Dict[str, List[Dict[str, Any]]]:
         try:
             with open(path, 'rb') as f:
                 _FONT_GROUPS_CACHE = json.loads(f.read())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            FallbackWarning.warn(
+                'Reading font-groups.json', 'an OS-version base with no font additions', e
+            )
             _FONT_GROUPS_CACHE = {}
     return _FONT_GROUPS_CACHE
 
@@ -426,7 +271,10 @@ def _load_font_bases() -> Dict[str, List[Dict[str, Any]]]:
         try:
             with open(path, 'rb') as f:
                 _FONT_BASES_CACHE = json.loads(f.read())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            FallbackWarning.warn(
+                'Reading font-bases.json', 'only the always-present core fonts as its OS base', e
+            )
             _FONT_BASES_CACHE = {}
     return _FONT_BASES_CACHE
 
@@ -1446,11 +1294,11 @@ def _fpgen_webgl_failed(error: Exception) -> None:
 
 
 def _recorded_gpus(target_os: str) -> FrozenSet[Tuple[str, str]]:
-    # Not at the top: camoufox.webgl.recorded imports this module.
-    from camoufox.webgl import recorded
+    # Not at the top: camoufox.webgl imports this module.
+    from camoufox import webgl
 
     try:
-        return recorded.firefox_gpus(target_os)
+        return webgl.firefox_gpus(target_os)
     except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
         _fpgen_webgl_failed(error)
         return frozenset()
@@ -1458,8 +1306,6 @@ def _recorded_gpus(target_os: str) -> FrozenSet[Tuple[str, str]]:
 
 def webgl_gpus(os_name: str) -> FrozenSet[Tuple[str, str]]:
     """Every (vendor, renderer) Camoufox has WebGL data for on this OS."""
-    from camoufox.webgl.sample import database_gpus
-
     os_key = {'macos': 'mac', 'windows': 'win', 'linux': 'lin'}.get(os_name, os_name)
     return _recorded_gpus(os_key) | database_gpus(os_key)
 
@@ -1473,13 +1319,13 @@ def webgl_for_gpu(
     row. Raises ValueError when neither has it.
     """
     if (vendor, renderer) in _recorded_gpus(target_os):
-        from camoufox.webgl import recorded
+        from camoufox import webgl
 
         # A model can list the GPU and still fail to describe it: model-4/2025,
         # which fpgen fetches itself when `camoufox fetch` has not installed the
         # pinned model, has WebGL records without vendor or renderer.
         try:
-            return recorded.webgl_for_gpu(target_os, vendor, renderer, seed)
+            return webgl.webgl_for_gpu(target_os, vendor, renderer, seed)
         except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
             _fpgen_webgl_failed(error)
     return sample_webgl(target_os, vendor, renderer, seed=seed)
@@ -1496,16 +1342,16 @@ def sample_webgl_for_screen(
     """Draw a GPU that fits the screen and core count already chosen, and its
     WebGL config.
 
-    From fpgen's recorded devices (camoufox.webgl.recorded), which never
+    From fpgen's recorded devices (camoufox.webgl), which never
     offers a software rasteriser, a GPU the OS cannot report, a discrete GPU
     behind a netbook panel or an Intel Mac GPU no Intel Mac pairs with these
     cores and this screen. From webgl_data.db only if fpgen cannot answer;
     `attempts` bounds that path's rejection sampling.
     """
-    from camoufox.webgl import recorded
+    from camoufox import webgl
 
     try:
-        return recorded.sample_webgl_for_screen(target_os, width, height, seed, cores)
+        return webgl.sample_webgl_for_screen(target_os, width, height, seed, cores)
     except Exception as error:  # noqa: BLE001 -- any fpgen failure means "use the database"
         _fpgen_webgl_failed(error)
     return _sample_db_webgl_for_screen(target_os, width, height, attempts, seed, cores)
@@ -1745,15 +1591,8 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None, salt: Optional[i
     if webgl.get('unmaskedRenderer'):
         config['webGl:renderer'] = webgl['unmaskedRenderer']
 
-    # Generate unique random seeds per launch (1 to 2^32-1, excluding 0 which is a no-op in C++)
-    # fonts:spacing_seed stays 0 (off): glyph-advance perturbation produces text
-    # widths no real machine emits (see launch_options in utils.py).
-    # A seed the preset sets itself (0 included, which disables that noise) is
-    # kept rather than overwritten (rubenvereecken/camoufox 3c04f0a).
-    config['fonts:spacing_seed'] = preset.get('fonts:spacing_seed', 0)
     # Web Audio noise off unless the preset sets it: see launch_options in utils.py.
     config['audio:seed'] = preset.get('audio:seed', 0)
-    config['canvas:seed'] = preset.get('canvas:seed', randint(1, 4_294_967_295))  # nosec
 
     if preset.get('timezone'):
         config['timezone'] = preset['timezone']
@@ -1768,10 +1607,16 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None, salt: Optional[i
         target_os = 'linux'
     else:
         target_os = 'macos'
+    preset_key = f"{config.get('navigator.userAgent')} / {config.get('webGl:renderer')}"
     try:
         config['fonts'] = _generate_random_font_subset(target_os, seed=identity_seed(config, salt))
-    except Exception:
-        # Fallback to preset fonts if font generation fails
+    except (OSError, ValueError) as e:
+        FallbackWarning.warn(
+            'Drawing the font list',
+            "the preset's recorded fonts" if preset.get('fonts') else "the browser's own fonts",
+            e,
+            preset_key,
+        )
         if preset.get('fonts'):
             fonts = list(preset['fonts'])
             _ensure_marker_fonts(fonts, {
@@ -1783,7 +1628,13 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None, salt: Optional[i
     # Generate a unique random voice subset from the OS voice list
     try:
         config['voices'] = _generate_random_voice_subset(target_os, seed=identity_seed(config, salt))
-    except Exception:
+    except (OSError, ValueError, KeyError) as e:
+        FallbackWarning.warn(
+            'Drawing the speech voices',
+            "the preset's recorded voices" if preset.get('speechVoices') else "the browser's own voices",
+            e,
+            preset_key,
+        )
         if preset.get('speechVoices'):
             config['voices'] = _normalize_preset_voices(
                 preset['speechVoices'], target_os
@@ -1802,9 +1653,7 @@ def _build_init_script(values: Dict[str, Any]) -> str:
     lines = ['(function(v) {', '  var w = window;']
 
     setters = [
-        ('fontSpacingSeed', 'setFontSpacingSeed', '{val}'),
         ('audioFingerprintSeed', 'setAudioFingerprintSeed', '{val}'),
-        ('canvasSeed', 'setCanvasSeed', '{val}'),
         ('navigatorPlatform', 'setNavigatorPlatform', '{val}'),
         ('navigatorOscpu', 'setNavigatorOscpu', '{val}'),
         ('navigatorUserAgent', 'setNavigatorUserAgent', '{val}'),
@@ -1846,19 +1695,18 @@ def _build_init_script(values: Dict[str, Any]) -> str:
             f'  if (typeof w.setTimezone === "function") w.setTimezone({_json.dumps(tz)});'
         )
 
-    # WebRTC IP. An IPv6 exit address belongs in the v6 slot: written to the v4
-    # one it never masks the real v6 candidate (lang315/camoufox#287). Both
-    # setters are always called -- an empty value just spends them -- so neither
-    # is left for the page.
-    ip = values.get('webrtcIP') or ''
-    v6 = bool(ip) and ':' in ip
-    ipv4, ipv6 = ('', ip) if v6 else (ip, '')
-    lines.append(
-        f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ipv4)});'
-    )
-    lines.append(
-        f'  if (typeof w.setWebRTCIPv6 === "function") w.setWebRTCIPv6({_json.dumps(ipv6)});'
-    )
+    # WebRTC IP
+    ip = values.get('webrtcIP')
+    if ip:
+        validate_ip(ip)
+        fn_name = 'setWebRTCIPv4' if valid_ipv4(ip) else 'setWebRTCIPv6'
+        lines.append(
+            f'  if (typeof w.{fn_name} === "function") w.{fn_name}({_json.dumps(ip)});'
+        )
+    else:
+        lines.append(
+            '  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4("");'
+        )
 
     # Font list (comma-separated)
     font_list = values.get('fontList')
@@ -1907,8 +1755,7 @@ def generate_context_fingerprint(
             normalize_locale() and injected into config. Also sets
             context_options['locale'] for Playwright.
         config_overrides: Dict of CAMOU_CONFIG keys to override after config
-            is built but before init_script is rendered. Useful for disabling
-            perturbation (e.g. {'fonts:spacing_seed': 0}).
+            is built but before init_script is rendered (e.g. {'audio:seed': 7}).
     """
     if preset is not None:
         # Use real fingerprint preset
@@ -1920,14 +1767,18 @@ def generate_context_fingerprint(
         # Fall back to synthetic generation
         fp = generate_fingerprint(os=os)
         config = from_fpgen(fp, ff_version)
+        # fpgen's Linux pool now and then pairs the Linux UA with a Windows
+        # platform and oscpu. launch_options() corrects that; this path did
+        # not, so ~1.6% of Linux contexts said Win32 -- and, since the OS below
+        # is read from the platform, drew Windows fonts and voices as well.
+        if 'Linux' in str(config.get('navigator.userAgent', '')):
+            fix_navigator_arch(config, 'lin')
 
         # A fresh identity: every seeded draw below gets its own salt.
         _salt = identity_salt()
 
         # Add seeds (the generator doesn't produce these)
-        config.setdefault('fonts:spacing_seed', 0)  # perturbation off; see utils.launch_options
         config.setdefault('audio:seed', 0)  # noise off; see utils.launch_options
-        config.setdefault('canvas:seed', randint(1, 4_294_967_295))  # nosec
 
         # Determine target OS from platform for font/voice generation
         plat = config.get('navigator.platform', '')
@@ -1941,15 +1792,21 @@ def generate_context_fingerprint(
         if 'fonts' not in config:
             try:
                 config['fonts'] = _generate_random_font_subset(os_name, seed=identity_seed(config, _salt))
-            except Exception:
-                pass
+            except (OSError, ValueError) as e:
+                FallbackWarning.warn(
+                    'Drawing the font list', "the browser's launch-time fonts", e,
+                    config.get('navigator.userAgent'),
+                )
 
         # Add voices (fpgen.yml does not map these yet)
         if 'voices' not in config:
             try:
                 config['voices'] = _generate_random_voice_subset(os_name, seed=identity_seed(config, _salt))
-            except Exception:
-                pass
+            except (OSError, ValueError, KeyError) as e:
+                FallbackWarning.warn(
+                    'Drawing the speech voices', "the browser's launch-time voices", e,
+                    config.get('navigator.userAgent'),
+                )
 
         # Derive oscpu if the fingerprint didn't provide it
         if 'navigator.oscpu' not in config:
@@ -1961,7 +1818,7 @@ def generate_context_fingerprint(
             elif 'Linux' in plat or 'linux' in plat:
                 config['navigator.oscpu'] = 'Linux x86_64'
 
-        # Sample WebGL vendor/renderer from database (fpgen.yml does not map these yet)
+        # Draw the GPU and its WebGL data (fpgen.yml does not map these)
         if not config.get('webGl:vendor') or not config.get('webGl:renderer'):
             _os_map = {'macos': 'mac', 'linux': 'lin', 'windows': 'win'}
             _target_os = _os_map.get(os or '', None)
@@ -1973,20 +1830,17 @@ def generate_context_fingerprint(
                     _target_os = 'lin'
                 else:
                     _target_os = 'mac'
-            try:
-                # Same coherence treatment launch_options applies (#729): lift
-                # netbook geometry, then keep the GPU consistent with whatever
-                # screen this identity ended up with. This path has no real
-                # display to reconcile against, so the floor is unconditional.
-                raise_screen_to_modern_floor(config)
-                webgl_fp = sample_webgl_for_screen(
-                    _target_os, config.get('screen.width'), config.get('screen.height'),
-                    cores=config.get('navigator.hardwareConcurrency'),
-                )
-                webgl_fp.pop('webGl2Enabled', None)
-                config.update(webgl_fp)
-            except Exception:
-                pass
+            # Same coherence treatment launch_options applies (#729): lift
+            # netbook geometry, then keep the GPU consistent with whatever
+            # screen this identity ended up with. This path has no real
+            # display to reconcile against, so the floor is unconditional.
+            raise_screen_to_modern_floor(config)
+            webgl_fp = sample_webgl_for_screen(
+                _target_os, config.get('screen.width'), config.get('screen.height'),
+                cores=config.get('navigator.hardwareConcurrency'),
+            )
+            webgl_fp.pop('webGl2Enabled')
+            config.update(webgl_fp)
 
         # Build source dicts from the fingerprint config for init_values
         nav = {
@@ -2023,9 +1877,7 @@ def generate_context_fingerprint(
 
     # Build the values dict for the init script (works for both paths)
     init_values: Dict[str, Any] = {
-        'fontSpacingSeed': config.get('fonts:spacing_seed'),
         'audioFingerprintSeed': config.get('audio:seed'),
-        'canvasSeed': config.get('canvas:seed'),
         'navigatorPlatform': nav.get('platform'),
         'navigatorOscpu': config.get('navigator.oscpu'),
         'navigatorUserAgent': config.get('navigator.userAgent'),

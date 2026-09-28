@@ -1,10 +1,10 @@
 diff --git a/browser/base/content/browser-init.js b/browser/base/content/browser-init.js
-index 1cfa4b8497..bdf8d7202e 100644
+index 0aa4baea8e..343691b2f8 100644
 --- a/browser/base/content/browser-init.js
 +++ b/browser/base/content/browser-init.js
-@@ -3,6 +3,17 @@
-  * License, v. 2.0. If a copy of the MPL was not distributed with this
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+@@ -44,6 +44,17 @@ var gSerialDeviceObserver = {
+   },
+ };
  
 +const { AddonManager } = ChromeUtils.importESModule(
 +  "resource://gre/modules/AddonManager.sys.mjs",
@@ -20,7 +20,7 @@ index 1cfa4b8497..bdf8d7202e 100644
  let _resolveDelayedStartup;
  var delayedStartupPromise = new Promise(resolve => {
    _resolveDelayedStartup = resolve;
-@@ -72,7 +82,7 @@ var gBrowserInit = {
+@@ -157,7 +168,7 @@ var gBrowserInit = {
      updateBookmarkToolbarVisibility();
  
      // Set a sane starting width/height for all resolutions on new profiles.
@@ -29,7 +29,7 @@ index 1cfa4b8497..bdf8d7202e 100644
        // When the fingerprinting resistance is enabled, making sure that we don't
        // have a maximum window to interfere with generating rounded window dimensions.
        document.documentElement.setAttribute("sizemode", "normal");
-@@ -310,6 +320,22 @@ var gBrowserInit = {
+@@ -385,6 +396,22 @@ var gBrowserInit = {
      // Update UI if browser is under remote control.
      gRemoteControl.updateVisualCue();
  
@@ -52,7 +52,7 @@ index 1cfa4b8497..bdf8d7202e 100644
      // If we are given a tab to swap in, take care of it before first paint to
      // avoid an about:blank flash.
      let tabToAdopt = this.getTabToAdopt();
-@@ -345,6 +371,33 @@ var gBrowserInit = {
+@@ -448,6 +475,33 @@ var gBrowserInit = {
        }
      }
  
@@ -86,8 +86,8 @@ index 1cfa4b8497..bdf8d7202e 100644
      // Wait until chrome is painted before executing code not critical to making the window visible
      this._boundDelayedStartup = this._delayedStartup.bind(this);
      window.addEventListener("MozAfterPaint", this._boundDelayedStartup);
-@@ -366,9 +417,183 @@ var gBrowserInit = {
-       )?.removeAttribute("key");
+@@ -475,9 +529,181 @@ var gBrowserInit = {
+       }
      }
  
 +    // Set default size
@@ -133,8 +133,8 @@ index 1cfa4b8497..bdf8d7202e 100644
 +    browser.style.setProperty('box-sizing', 'content-box');
 +
 +    // Hijack the inner window size
-+    let innerWidth = ChromeUtils.camouGetInt("window.innerWidth") || ChromeUtils.camouGetInt("document.body.clientWidth");
-+    let innerHeight = ChromeUtils.camouGetInt("window.innerHeight") || ChromeUtils.camouGetInt("document.body.clientHeight");
++    let innerWidth = ChromeUtils.camouGetInt("window.innerWidth");
++    let innerHeight = ChromeUtils.camouGetInt("window.innerHeight");
 +
 +    if (innerWidth || innerHeight) {
 +      let win_inner_style = document.createElement('style');
@@ -157,11 +157,9 @@ index 1cfa4b8497..bdf8d7202e 100644
 +      window.resizeBy(width - innerWidth, height + toolbarTop - innerHeight);
 +    }
 +
-+    // Install addons if specified -- once per launch. gBrowserInit runs for
-+    // every window, and Juggler opens one per page: installing an installed
-+    // temporary addon restarts it, and a request its webRequest listener had
-+    // suspended was never resumed, so the navigation hung. The flag is a
-+    // default pref, which is never written to prefs.js.
++    // Install addons once per launch: this runs for every window, Juggler opens
++    // one per page, and reinstalling a temporary addon restarts it. A default
++    // pref is never written to prefs.js.
 +    let addonPaths = ChromeUtils.camouGetStringList("addons");
 +    let defaults = Services.prefs.getDefaultBranch("");
 +    if (addonPaths?.length && !defaults.getBoolPref(ADDONS_INSTALLED_PREF, false)) {

@@ -4,8 +4,8 @@ Tests for the WebGL <-> screen coherence helpers in camoufox.fingerprints.
 Run with:
     cd pythonlib && python -m pytest tests/test_webgl_screen_consistency.py -v
 
-The regression these guard (daijro/camoufox#729): BrowserForge picks the
-screen, webgl_data.db picks the GPU, and nothing ties them together -- so the
+The regression these guard (daijro/camoufox#729): the generator picks the
+screen, camoufox.webgl picks the GPU, and nothing ties them together -- so the
 synthetic path can emit pairs no real machine ships (a discrete GPU behind a
 1024x600 netbook panel).
 
@@ -211,8 +211,8 @@ def test_a_plausible_first_draw_costs_one_query(monkeypatch):
 @pytest.mark.parametrize("target_os", ["win", "mac", "lin"])
 def test_sampled_gpu_is_coherent_with_the_screen(target_os, sample):
     # Against the real pools: fpgen's recorded devices, and webgl_data.db behind them.
-    for _ in range(25):
-        fp = sample(target_os, 1280, 800)
+    for seed in range(25):
+        fp = sample(target_os, 1280, 800, seed=seed)
         assert gpu_screen_is_plausible(fp.get("webGl:renderer"), 1280, 800)
 
 
@@ -259,8 +259,8 @@ def test_screen_floor_is_a_no_op_without_screen_values():
 @pytest.mark.parametrize("target_os", ["windows", "macos", "linux"])
 def test_context_fingerprints_get_the_same_treatment(target_os):
     """generate_context_fingerprint() is the per-context API #729 names, and
-    build-tester drives the browser through it. It sampled the GPU with a bare
-    sample_webgl() and never applied the floor, so the coherence fix reached
+    build-tester drives the browser through it. It drew the GPU without the
+    screen and never applied the floor, so the coherence fix reached
     launch_options() only."""
     from camoufox.fingerprints import generate_context_fingerprint
 

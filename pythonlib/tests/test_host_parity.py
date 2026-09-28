@@ -91,13 +91,9 @@ def test_caller_values_win(launch):
 
 @pytest.mark.parametrize("ua", [WIN_UA, MAC_UA, LIN_UA])
 def test_css_animations_run_in_real_time(launch, ua):
+    # Stock timing is the browser's default; instantAnimations opts out of it.
     config, _ = launch(ua)
-    assert config["disableInstantAnimations"] is True
-
-
-def test_caller_can_keep_instant_animations(launch):
-    config, _ = launch(LIN_UA, config={"disableInstantAnimations": False})
-    assert config["disableInstantAnimations"] is False
+    assert "instantAnimations" not in config
 
 
 class TestIpAccuracy:

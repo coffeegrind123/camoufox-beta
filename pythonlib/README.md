@@ -7,7 +7,7 @@
 </div>
 
 > [!NOTE]
-> All the the latest documentation is avaliable [here](https://camoufox.com/python).
+> All the latest documentation is available [here](https://camoufox.com/python).
 
 ---
 
@@ -33,19 +33,11 @@ The `geoip` parameter is optional, but heavily recommended if you are using prox
 
 Next, download the Camoufox browser:
 
-**Windows**
-
 ```bash
 camoufox fetch
 ```
 
-**MacOS & Linux**
-
-```bash
-python3 -m camoufox fetch
-```
-
-`fetch` also installs fpgen's model data, pinned by sha256, into fpgen's package directory. Run it as that directory's owner when the browser will run as another user (e.g. while building a Docker image); otherwise the first fingerprint generation installs the model.
+`fetch` also installs fpgen's model, pinned by sha256, into fpgen's package directory. Otherwise the first generated fingerprint installs it. Run `fetch` as that directory's owner if the browser will run as another user, e.g. while building a Docker image.
 
 To uninstall, run `camoufox remove`.
 
@@ -77,7 +69,7 @@ camoufox gui
 
 ---
 
-## CLI Mananger
+## CLI Manager
 
 #### Demonstration
 
@@ -248,13 +240,12 @@ Display the Python package version, active browser version, channel, and update 
 ```bash
 > camoufox version
 Python Packages
-  Camoufox                    v0.5.0
+  Camoufox                    v0.5.7
   fpgen                       v1.3.0
-  Apify Fingerprints          v0.10.0
-  Playwright                  v1.57.1.dev0+g732639b35.d20251217
+  Playwright                  v1.62.0
 Browser
-  Active                      official/stable/135.0.1-beta.24
-  Current browser             v135.0.1-beta.24
+  Active                      official/stable/152.0.4-beta.31
+  Current browser             v152.0.4-beta.31
   Installed                   Yes
   Latest in official/stable?  Yes
   Last Sync                   2026-03-07 00:23
@@ -305,4 +296,4 @@ Launch a remote Playwright server.
 
 ## Usage
 
-All of the latest stable documentation is avaliable at [camoufox.com/python](https://camoufox.com/python).
+All of the latest stable documentation is available at [camoufox.com/python](https://camoufox.com/python).

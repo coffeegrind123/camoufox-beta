@@ -1,216 +1,186 @@
-"""
-fpgen's model data, installed from a pinned release before fpgen is imported.
+"""fpgen's model, installed from the pinned release before fpgen is imported.
 
-Left to itself, `import fpgen` fetches its model the first time, from whichever
-release the unauthenticated GitHub API lists first, with TLS verification off,
-into its own package directory -- and fetches it again whenever the files are
-more than five weeks old (fpgen.pkgman.assert_downloaded / files_are_recent).
-That fails in three ways:
+Left to itself, `import fpgen` downloads its model from the first release the
+GitHub API lists, with TLS verification off and no checksum, and downloads it
+again whenever the files are five weeks old (fpgen/pkgman.py). The first
+release listed is model-4/2025, whose WebGL records have no vendor or renderer,
+so every generated launch failed with KeyError: 'vendor'.
 
-- the API allows 60 unauthenticated requests an hour per IP, so CI runners and
-  shared egress IPs get a 403 and no fingerprint can be generated (Tests run
-  36247317299: 22 of 26 patch guards died on it);
-- a package directory the launching user cannot write (a Docker image built as
-  root and run as another user, a read-only site-packages) fails every launch
-  once the model is five weeks old, however it was seeded;
-- the model is whatever scrapfly listed first on the day, not a pinned input.
-
-So the model is pinned here by URL and sha256, downloaded with TLS verified,
-checked file by file, and stamped with a far-future mtime so fpgen's five-week
-refresh never fires for a model this module installed.
+So fpgen is only ever imported through load_fpgen(), which first installs the
+release named by fpgen-model.json (a copy of scripts/data/fpgen-model.json),
+checks the archive and each file against its sha256, and dates the files in the
+future so fpgen's five-week refresh never replaces them. The data directory
+layout, including the `.pinned-model` stamp, is the one
+scripts/pin-fpgen-model.py and the TypeScript launcher write.
 """
 
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional
+from types import ModuleType
+from typing import Optional
 from zipfile import ZipFile
 
 from .exceptions import CorruptedDownload, FpgenModelError
-from rich.console import Console
-
 from .pkgman import verify_sha256, webdl
 
-# model-2/2026, the newest corpus. fpgen's own fetcher never reaches it: the API
-# lists model-4/2025 first (the two tags share a created_at) and fpgen takes the
-# first zip it sees, so unpinned installs generate from April 2025 (newest
-# Firefox 137, no RDNA4). Moving to another model is a deliberate change:
-# update the URL, the archive digest and every member digest below.
-FPGEN_MODEL_URL = (
-    "https://github.com/scrapfly/fingerprint-generator/releases/download/"
-    "model-2/2026/model-release.zip"
-)
-FPGEN_MODEL_SHA256 = "6530b8322cdaa4ec042921c8d9a0369a0e6e0269ba636c01a7203e4a2f109936"
+PIN = json.loads((Path(__file__).parent / 'fpgen-model.json').read_text(encoding='utf-8'))
 
-# The archive's members, as fpgen.pkgman.FILE_PAIRS names their compressed form.
-FPGEN_MODEL_FILES: Dict[str, str] = {
-    "fingerprint-network.json.zst": "e1b0a7e60837c347f4b7d5dad4a20c356d521e0593e1bf4a8be39ea1e6a41ac4",
-    "values.json.zst": "294decde5b6a1a52ed53d50a894130fa5c58f7cc804b78198f5c33f55b3ba66f",
-    "values.dat.zst": "3da2cf0891a4a85ef6458f0fbdf9346acfcd04e5fd279a0ea22d7919e4eaf122",
-}
+# Holds the archive's sha256, written last: a stamp means the install finished.
+STAMP = '.pinned-model'
 
-# `python -m fpgen decompress` replaces each .zst with its decompressed file;
-# fpgen then reads (and ages) those instead.
-DECOMPRESSED_FILES = ["fingerprint-network.json", "values.json", "values.dat"]
+# `python -m fpgen decompress` replaces the archive's files with these, which
+# fpgen then reads in preference to them.
+DECOMPRESSED_FILES = ('fingerprint-network.json', 'values.json', 'values.dat')
+# The TypeScript launcher decompresses values.dat beside the archive's files,
+# and CAMOUFOX_FPGEN_DATA may point it at this directory. The pin carries its
+# hash, so a values.dat from the pinned model is kept and any other is dropped.
 
-# 2100-01-01T00:00:00Z. fpgen refreshes files whose mtime is more than five
-# weeks in the past; this one never is.
+# 2100-01-01T00:00:00Z. fpgen refetches files whose mtime is older than this
+# window (pkgman.files_are_recent).
 PINNED_MTIME = 4102444800
-
-# fpgen.pkgman.files_are_recent: older than this and fpgen fetches again.
 FPGEN_MAX_AGE_S = 5 * 7 * 24 * 3600
 
-# fpgen honours this to fetch a custom (possibly password-protected) model.
-# Someone who set it chose their model; this module stays out of the way.
-CUSTOM_MODEL_ENV = "FPGEN_MODEL_URL"
+# fpgen fetches a model from this URL instead of GitHub. A caller who set it
+# chose their model, so it is left alone.
+CUSTOM_MODEL_ENV = 'FPGEN_MODEL_URL'
 
 _LOCK = Lock()
-
-# The install runs inside a caller's launch, and a caller's stdout may be data
-# (a probe that prints JSON): progress goes to stderr.
-_STDERR = Console(stderr=True)
-
-
-def _say(msg: str, fg: Optional[str] = None) -> None:
-    _STDERR.print(msg, style=f"bold {fg}" if fg else "bold", highlight=False)
+_ready = False
 
 
 def fpgen_data_dir() -> Path:
-    """
-    Where fpgen reads its model from, found without importing fpgen (importing
-    it is what triggers its own fetch).
-    """
-    spec = importlib.util.find_spec("fpgen")
+    """Where fpgen reads its model, found without importing fpgen (which fetches)."""
+    spec = importlib.util.find_spec('fpgen')
     if spec is None or spec.origin is None:
-        raise FpgenModelError("fpgen is not installed.")
-    return Path(spec.origin).parent / "data"
+        raise FpgenModelError('fpgen is not installed.')
+    return Path(spec.origin).parent / 'data'
 
 
-def ensure_fpgen_model(data_dir: Optional[Path] = None) -> None:
-    """
-    Make sure fpgen will find a pinned, current-looking model and fetch nothing.
+def load_fpgen() -> ModuleType:
+    """fpgen, imported only once the pinned model is in place."""
+    global _ready
+    if not _ready:
+        ensure_fpgen_model()
+        _ready = True
+    import fpgen
+    import fpgen.utils  # noqa: F401 -- callers use fpgen.utils._lookup_possibilities
 
-    - No model: download the pinned release, verify it, install it.
-    - Files that hash to the pinned ones (installed here, by fpgen itself, or
-      seeded by an image): kept, and stamped if they are not already.
-    - Any other model, including one this module installed under an earlier
-      pin: replaced.
-    - A decompressed model: kept and stamped. Its content cannot be checked
-      against the archive's hashes, and decompressing is a deliberate act.
-    """
+    return fpgen
+
+
+def is_pinned(data_dir: Optional[Path] = None) -> bool:
+    """Whether the pinned model's files are in place, whatever wrote them."""
+    data_dir = data_dir or fpgen_data_dir()
+    return all(
+        (data_dir / name).exists() and _hash(data_dir / name) == digest
+        for name, digest in PIN['file_sha256'].items()
+    )
+
+
+def ensure_fpgen_model(data_dir: Optional[Path] = None, force: bool = False) -> None:
+    """Install the pinned model unless it is already there, and keep fpgen from
+    replacing it. Hashing the installed files takes ~2 ms, and catches a model
+    fpgen fetched over an earlier install."""
     if os.getenv(CUSTOM_MODEL_ENV):
         return
-
     data_dir = data_dir or fpgen_data_dir()
     with _LOCK:
+        if any(
+            (data_dir / name).exists()
+            for name in DECOMPRESSED_FILES
+            if name not in PIN['decompressed_sha256']
+        ):
+            raise FpgenModelError(
+                f"fpgen's model in {data_dir} is decompressed, so it cannot be checked against "
+                f"the pinned {PIN['tag']}. Remove it with `python -m fpgen remove`; Camoufox "
+                'then installs the pinned model.'
+            )
         try:
-            _ensure(data_dir)
+            if force or not is_pinned(data_dir):
+                _install(data_dir)
+            _drop_foreign_decompressed(data_dir)
+            _stamp(data_dir)
         except PermissionError as e:
             raise FpgenModelError(
                 f"fpgen's model directory is not writable by this user: {data_dir}\n"
-                "Install the model as the directory's owner once, e.g. while building "
-                "the image: python -m camoufox fetch"
+                'Install the model as its owner once, e.g. while building an image: '
+                'camoufox fetch'
             ) from e
 
 
-def _ensure(data_dir: Path) -> None:
-    decompressed = [data_dir / name for name in DECOMPRESSED_FILES]
-    if all(p.exists() for p in decompressed):
-        _stamp(decompressed)
-        return
-
-    compressed = [data_dir / name for name in FPGEN_MODEL_FILES]
-    if all(p.exists() for p in compressed):
-        # Hashed every time, stamped or not: the stamp only says this module
-        # wrote the file, and a machine that installed the previous pin has
-        # stamped files that must still be replaced (~2 ms for model-2/2026).
-        if all(_hash(p) == FPGEN_MODEL_FILES[p.name] for p in compressed):
-            _stamp(compressed)
-            return
-        _say(f"fpgen model in {data_dir} is not the pinned release; replacing it.", fg="yellow")
-        try:
-            _install(data_dir)
-        except PermissionError:
-            # Same rule as _stamp: an unpinned model fpgen still accepts beats
-            # no fingerprint at all.
-            if not all(_fpgen_considers_current(p) for p in compressed):
-                raise
-            _say("Cannot replace it (directory not writable); using it as is.", fg="yellow")
-        return
-
-    _install(data_dir)
-
-
 def _install(data_dir: Path) -> None:
-    # One line, not webdl's per-chunk percentages: this runs inside a launch,
-    # whose output usually lands in a log.
-    _say(f"Downloading fpgen model: {FPGEN_MODEL_URL}")
-    buffer = webdl(FPGEN_MODEL_URL, progress_callback=lambda done, total: None)
-    verify_sha256(buffer, FPGEN_MODEL_SHA256, "fpgen model")
+    print(f"Downloading fpgen model {PIN['tag']}: {PIN['url']}", file=sys.stderr)
+    buffer = webdl(PIN['url'], progress_callback=lambda done, total: None)
+    verify_sha256(buffer, PIN['sha256'], 'fpgen model')
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = Path(tempfile.mkdtemp(prefix=".model.tmp-", dir=data_dir))
+    staging = Path(tempfile.mkdtemp(prefix='.model-', dir=data_dir))
     try:
         with ZipFile(buffer) as zf:
-            names = set(zf.namelist())
-            if names != set(FPGEN_MODEL_FILES):
+            if sorted(zf.namelist()) != sorted(PIN['file_sha256']):
                 raise CorruptedDownload(
-                    f"fpgen model archive holds {sorted(names)}, "
-                    f"expected {sorted(FPGEN_MODEL_FILES)}."
+                    f"fpgen model archive holds {sorted(zf.namelist())}, "
+                    f"expected {sorted(PIN['file_sha256'])}."
                 )
-            for name, expected in FPGEN_MODEL_FILES.items():
+            # Members are read by name, never extracted by path.
+            for name, expected in PIN['file_sha256'].items():
                 data = zf.read(name)
-                actual = hashlib.sha256(data).hexdigest()
-                if actual != expected:
-                    raise CorruptedDownload(
-                        f"fpgen model member {name}: sha256 {actual}, expected {expected}."
-                    )
-                (tmp_dir / name).write_bytes(data)
-
-        # Stamp before moving: a file that appears under its final name is
-        # already current in fpgen's eyes. Each rename is atomic, so a
-        # concurrent reader sees the old file or the new one, never a torn one.
-        staged = [tmp_dir / name for name in FPGEN_MODEL_FILES]
-        _stamp(staged)
-        for path in staged:
-            os.replace(path, data_dir / path.name)
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise CorruptedDownload(f'fpgen model member {name} does not match its pinned sha256.')
+                (staging / name).write_bytes(data)
+        (data_dir / STAMP).unlink(missing_ok=True)
+        for name in PIN['file_sha256']:
+            # Dated before the move, so fpgen never sees it as stale; each
+            # replace is atomic, so a concurrent reader never sees a torn file.
+            os.utime(staging / name, (PINNED_MTIME, PINNED_MTIME))
+            os.replace(staging / name, data_dir / name)
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
 
 
-def _stamped(path: Path) -> bool:
-    return int(path.stat().st_mtime) == PINNED_MTIME
+def _drop_foreign_decompressed(data_dir: Path) -> None:
+    """Remove a decompressed file that is not the pinned model's: fpgen would
+    read it in preference to the verified archive. Hashing values.dat (~210 MB)
+    takes ~0.2 s, once per process, and only when the file is there."""
+    for name, digest in PIN['decompressed_sha256'].items():
+        path = data_dir / name
+        if path.exists() and _hash(path) != digest:
+            path.unlink(missing_ok=True)
 
 
-def _stamp(paths: List[Path]) -> None:
-    """
-    Stamp each file so fpgen never considers it stale. A file this user may not
-    touch (seeded by root for a non-root runtime) is fine as long as fpgen
-    still considers it current; it becomes an error only once fpgen would
-    refetch it.
-    """
-    for path in paths:
-        if _stamped(path):
+def _stamp(data_dir: Path) -> None:
+    """Date the files past fpgen's refresh and write the stamp. Files seeded by
+    another user (a root-built image) may be left as they are while fpgen still
+    considers them current."""
+    for name in PIN['file_sha256']:
+        path = data_dir / name
+        if int(path.stat().st_mtime) == PINNED_MTIME:
             continue
         try:
             os.utime(path, (PINNED_MTIME, PINNED_MTIME))
         except PermissionError:
-            if not _fpgen_considers_current(path):
+            if path.stat().st_mtime < time.time() - FPGEN_MAX_AGE_S:
                 raise
-
-
-def _fpgen_considers_current(path: Path) -> bool:
-    return path.stat().st_mtime >= time.time() - FPGEN_MAX_AGE_S
+    stamp = data_dir / STAMP
+    try:
+        if stamp.read_text(encoding='utf-8').strip() == PIN['sha256']:
+            return
+    except OSError:
+        pass
+    stamp.write_text(PIN['sha256'] + '\n', encoding='utf-8')
 
 
 def _hash(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
             digest.update(block)
     return digest.hexdigest()

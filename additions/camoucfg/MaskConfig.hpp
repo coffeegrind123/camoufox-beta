@@ -417,18 +417,6 @@ inline std::optional<std::array<uint32_t, 4>> GetRect(std::string_view left,
   return result;
 }
 
-inline std::optional<std::array<int32_t, 4>> GetInt32Rect(
-    std::string_view left, std::string_view top, std::string_view width,
-    std::string_view height) {
-  if (auto optValue = GetRect(left, top, width, height)) {
-    std::array<int32_t, 4> result;
-    std::transform(optValue->begin(), optValue->end(), result.begin(),
-                   [](const auto& val) { return static_cast<int32_t>(val); });
-    return result;
-  }
-  return std::nullopt;
-}
-
 // Helpers for WebGL
 
 // The node at config[domain][key], or null. WebGL answers getParameter from

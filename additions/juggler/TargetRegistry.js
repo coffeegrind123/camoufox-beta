@@ -199,7 +199,7 @@ export class TargetRegistry {
         // context, so nothing could close this tab afterwards: context.close()
         // only closes the pages it still tracks, and the default context closes
         // none. Each crashed page kept its window alive until the browser
-        // exited -- 35-60 MB of parent RSS apiece, growing without bound across
+        // exited -- 15-60 MB of parent RSS apiece, growing without bound across
         // repeated crashes (#762's scraper). Deferred so the tab is not torn
         // down inside Gecko's own crash notification.
         setTimeout(() => this._closeCrashedTab(target), 0);
@@ -649,6 +649,7 @@ export class PageTarget {
     this.updateUserAgent(browsingContext);
     this.updatePlatform(browsingContext);
     this.updateDPPXOverride(browsingContext);
+    this.updateMobileEmulation(browsingContext);
     this.updateZoom(browsingContext);
     this.updateEmulatedMedia(browsingContext);
     this.updateColorSchemeOverride(browsingContext);
@@ -699,6 +700,19 @@ export class PageTarget {
     browsingContext.overrideDPPX = dppx;
   }
 
+  updateMobileEmulation(browsingContext = undefined) {
+    // Responsive Design Mode is devtools' mobile mode: overlay scrollbars, a
+    // mouse click's pointer events dropped under touch emulation, and RDM
+    // branches in screen, window and navigator getters, all readable by the
+    // page. It matches no real browser -- Firefox for Android never runs it --
+    // and Camoufox has only desktop identities, so it stays off even for
+    // isMobile. Playwright's Juggler turns it on for isMobile
+    // (microsoft/playwright#41859); this is a deliberate difference, and the
+    // launchers warn when isMobile is passed. The viewport does not need RDM:
+    // the <browser> element's size sets it.
+    (browsingContext || this._linkedBrowser.browsingContext).inRDMPane = false;
+  }
+
   async updateZoom(browsingContext = undefined) {
     browsingContext ||= this._linkedBrowser.browsingContext;
     // Update dpr first, and then UI zoom.
@@ -728,6 +742,7 @@ export class PageTarget {
   async updateViewportSize() {
     await waitForWindowReady(this._window);
     this.updateDPPXOverride();
+    this.updateMobileEmulation();
 
     // Viewport size is defined by three arguments:
     // 1. default size. Could be explicit if set as part of `window.open` call, e.g.
@@ -747,14 +762,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');
       this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');
       this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');
-      // Camoufox: no Responsive Design Mode for an emulated viewport. Upstream
-      // Playwright sets inRDMPane here; the viewport does not need it (the
-      // browser element's size above is what sizes it), and in RDM content
-      // gets devtools' Android theme -- overlay scrollbars, 0 px where the
-      // identity's classic ones measure 12 -- and stock getters take RDM
-      // early returns (screen.*, outerWidth, maxTouchPoints at 0.2-0.6x
-      // stock's cost), both readable from the page.
-      this._linkedBrowser.browsingContext.inRDMPane = false;
 
       const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();
       const toolbarTop = stackRect.y;
@@ -768,7 +775,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.removeProperty('overflow');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('contain');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('scrollbar-width');
-      this._linkedBrowser.browsingContext.inRDMPane = false;
 
       const actualSize = this._linkedBrowser.getBoundingClientRect();
       await this._channel.connect('').send('awaitViewportDimensions', {

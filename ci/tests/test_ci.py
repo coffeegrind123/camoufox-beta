@@ -237,11 +237,11 @@ def test_version_parsing():
 
 def test_upstream_sh_roundtrip_preserves_comments(tmp_path):
     path = tmp_path / "upstream.sh"
-    path.write_text("# a comment\nversion=152.0.4\nrelease=beta.31\nclosedsrc_rev=1.0.0\n")
+    path.write_text("# a comment\nversion=152.0.4\nrelease=beta.31\nextra=1\n")
     write_upstream_sh({"version": "153.0.4", "release": "beta.32"}, path)
     text = path.read_text()
     assert "# a comment" in text
-    assert "closedsrc_rev=1.0.0" in text
+    assert "extra=1" in text
     assert read_upstream_sh(path)["version"] == "153.0.4"
 
 
@@ -664,19 +664,14 @@ def test_audio_that_varies_between_contexts_is_the_bug():
     assert out["not_constant"] == ["macPerContext.uniqueAudio (3/3 distinct)"]
 
 
-def test_canvas_collisions_are_tracked_but_do_not_gate():
-    """Canvas belongs in must-vary and does not hold there yet.
-
-    Measured 16 distinct canvas fingerprints in 24 samples where audio gave
-    24/24 -- so two contexts collide about a third of the time. Gating would
-    fail one run in three for a real, unfixed reason; silence would lose the
-    finding. It gets its own bucket and is reported every run.
-    """
+def test_a_shared_canvas_is_noise_not_a_leak():
+    """The canvas is rendered, not noised (#528), so contexts with the same
+    fonts and GPU draw the same image, as two real machines would."""
     from ci.run_build_tester import uniqueness
 
     out = uniqueness(_cross(uniqueCanvas=2))
-    assert out["low_entropy"] == ["macPerContext.uniqueCanvas (2/3 distinct)"]
-    assert not out["leaks"] and not out["noise"]
+    assert out["noise"] == ["macPerContext.uniqueCanvas (2/3 distinct)"]
+    assert not out["leaks"]
 
 
 def test_a_shared_preset_value_is_noise_not_a_leak():
@@ -1006,8 +1001,9 @@ def test_required_suites_are_names_a_runner_actually_writes():
 
     producible = {
         "build", "build_tester", "patch_guards", "pythonlib", "sundial",
+        "patch_guards_spoofing", "patch_guards_automation", "patch_guards_parity",
         "native", "native_rules", "native_browser", "native_growth",
-        "playwright", "skiplist_audit",
+        "playwright", "skiplist_audit", "typescript", "typescript_browser",
     }
     unknown = required - producible
     assert not unknown, (
@@ -1873,8 +1869,9 @@ def test_the_browser_suites_are_required_either_way():
     for changed in ("true", "false"):
         required = _required_suites(changed, "false")
         assert {
-            "pythonlib", "native_rules", "patch_guards", "skiplist_audit",
-            "build_tester", "playwright", "native_browser",
+            "pythonlib", "native_rules", "skiplist_audit", "build_tester",
+            "playwright", "native_browser", "native_growth",
+            "patch_guards_spoofing", "patch_guards_automation", "patch_guards_parity",
         } <= required, changed
 
 
@@ -2315,7 +2312,7 @@ def test_the_native_inputs_cover_everything_that_can_change_the_binary():
     from ci.browser_inputs import BROWSER_DIRS, BROWSER_FILES
 
     text = WORKFLOW.read_text(encoding="utf-8")
-    scope = re.search(r"grep -qE '\^\(([^)]*)\)'", text)
+    scope = re.search(r"sources='\^\(([^)]*)\)'", text)
     assert scope, "the browser_changed grep is gone or was reshaped"
     considered = {
         part.replace("\\", "").rstrip("/") for part in scope.group(1).split("|") if part
@@ -2733,3 +2730,176 @@ def test_packaged_font_names_are_ascii(tmp_path):
     (again / "18__ヒラギノ角ゴシック W9.ttc").write_bytes(b"w9")
     package.ascii_file_names(tmp_path / "again")
     assert (again / [n for n in renamed if n.startswith("18__")][0]).exists()
+
+
+# ---------------------------------------------------------------------------
+# build-or-fetch: the published release is used only when it matches the tree
+# ---------------------------------------------------------------------------
+
+
+def _scope(repo: pathlib.Path, base: str) -> tuple[str, str]:
+    """Run the workflow's own "Does this change the browser?" step in `repo`."""
+    import subprocess
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    start = text.index("        run: |\n          if [ \"${{ github.event_name }}\" != \"pull_request\" ]")
+    end = text.index("      - name: May the stealth check run?", start)
+    lines = text[start:end].splitlines()[1:]
+    block = "\n".join(line[10:] if line.startswith(" " * 10) else line.strip() for line in lines)
+    block = block.replace("${{ github.event_name }}", "pull_request")
+    block = block.replace("${{ github.event.pull_request.base.sha }}", base)
+    out = repo / "out.txt"
+    proc = subprocess.run(
+        ["bash", "-e", "-c", block], cwd=repo, capture_output=True, text=True,
+        env={**os.environ, "GITHUB_OUTPUT": str(out)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return out.read_text().strip(), proc.stdout
+
+
+def _git(repo: pathlib.Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-c", "user.email=ci@test", "-c", "user.name=ci", *args],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def release_repo(tmp_path):
+    """A repo whose v1.0-beta.1 tag is the published release, and a main after it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "upstream.sh").write_text("version=1.0\nrelease=beta.1\n")
+    (repo / "patches").mkdir()
+    (repo / "patches" / "a.patch").write_text("a\n")
+    (repo / "typescript").mkdir()
+    (repo / "typescript" / "x.ts").write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "release")
+    _git(repo, "tag", "v1.0-beta.1")
+    return repo
+
+
+def test_driver_pr_on_the_released_sources_tests_the_release(release_repo):
+    base = _git(release_repo, "rev-parse", "HEAD")
+    (release_repo / "typescript" / "x.ts").write_text("y\n")
+    _git(release_repo, "commit", "-qam", "driver change")
+    assert _scope(release_repo, base)[0] == "browser_changed=false"
+
+
+def test_driver_pr_on_unreleased_browser_sources_builds(release_repo):
+    """#785: main had merged browser patches (#779) that no release carried yet,
+    so a TS-only pull request fetched beta.31 and ran #779's patch guards on it."""
+    (release_repo / "patches" / "a.patch").write_text("merged but unreleased\n")
+    _git(release_repo, "commit", "-qam", "browser change merged to main")
+    base = _git(release_repo, "rev-parse", "HEAD")
+    (release_repo / "typescript" / "x.ts").write_text("y\n")
+    _git(release_repo, "commit", "-qam", "driver change")
+    result, log = _scope(release_repo, base)
+    assert result == "browser_changed=true"
+    assert "patches/a.patch" in log
+
+
+def test_browser_pr_builds(release_repo):
+    base = _git(release_repo, "rev-parse", "HEAD")
+    (release_repo / "patches" / "a.patch").write_text("b\n")
+    _git(release_repo, "commit", "-qam", "browser change")
+    assert _scope(release_repo, base)[0] == "browser_changed=true"
+
+
+def test_unpublished_release_tag_builds(release_repo):
+    _git(release_repo, "tag", "-d", "v1.0-beta.1")
+    base = _git(release_repo, "rev-parse", "HEAD")
+    (release_repo / "typescript" / "x.ts").write_text("y\n")
+    _git(release_repo, "commit", "-qam", "driver change")
+    assert _scope(release_repo, base)[0] == "browser_changed=true"
+
+
+# ---------------------------------------------------------------------------
+# patch guards: every guard runs in exactly one CI leg
+# ---------------------------------------------------------------------------
+
+
+def _jobs() -> dict:
+    import yaml
+
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+
+
+def test_every_patch_guard_is_in_exactly_one_group():
+    """A guard in no group would never run in CI; one in two would run twice."""
+    from ci.run_patch_guards import GROUPS, guards
+
+    on_disk = {g.stem for g in guards()}
+    assigned = [name for names in GROUPS.values() for name in names]
+    assert not on_disk - set(assigned), (
+        f"guards in no group, so CI never runs them: {sorted(on_disk - set(assigned))}. "
+        "Add each to a group in ci/run_patch_guards.py."
+    )
+    assert not set(assigned) - on_disk, f"grouped but missing: {sorted(set(assigned) - on_disk)}"
+    doubled = sorted({n for n in assigned if assigned.count(n) > 1})
+    assert not doubled, f"guards in more than one group: {doubled}"
+
+
+def test_the_patch_guard_matrix_runs_every_group():
+    from ci.run_patch_guards import GROUPS
+
+    legs = {leg["leg"] for leg in _jobs()["patch-guards"]["strategy"]["matrix"]["include"]}
+    assert legs == set(GROUPS) | {"skiplist"}
+
+
+# ---------------------------------------------------------------------------
+# memory growth: sharded onto pull requests, and gated
+# ---------------------------------------------------------------------------
+
+
+def test_native_shards_split_the_tests_without_overlap():
+    from ci.run_native import parse_shard
+
+    ids = [f"t{i}" for i in range(9)]
+    parts = [ids[i - 1 :: n] for i, n in (parse_shard(f"{k}/4") for k in range(1, 5))]
+    assert sorted(t for part in parts for t in part) == ids
+    with pytest.raises(SystemExit):
+        parse_shard("5/4")
+
+
+def test_memory_growth_runs_on_pull_requests_and_gates_the_merge():
+    jobs = _jobs()
+    growth = jobs["growth"]
+    assert "event_name" not in str(growth.get("if", "")), "growth is limited to some events"
+    shards = growth["strategy"]["matrix"]["shard"]
+    n = len(shards)
+    assert shards == [f"{i}/{n}" for i in range(1, n + 1)]
+    assert "growth" in jobs["gate"]["needs"]
+    assert "growth" in jobs["summary"]["needs"]
+
+
+# ---------------------------------------------------------------------------
+# typescript: runs and reports in this fork, gates nothing
+# ---------------------------------------------------------------------------
+
+
+def test_typescript_jobs_do_not_gate_the_merge():
+    """This fork ships the Python launcher only; typescript/ is upstream's.
+
+    The TypeScript jobs still run, but a failure there must not turn "All tests
+    passed" red: not through the gate's needs, not through the summary's, and
+    not through a failing result file the summary happens to download.
+    """
+    jobs = _jobs()
+    for job in ("gate", "summary"):
+        needs = set(jobs[job]["needs"])
+        assert not needs & {"typescript", "typescript-browser"}, f"{job} needs {sorted(needs)}"
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    required = {
+        part
+        for line in re.findall(r'required="([^"]*)"', text)
+        for part in line.split()
+        if not part.startswith("$")
+    }
+    assert not required & {"typescript", "typescript_browser"}, sorted(required)
+    assert "--allow-failure typescript typescript_browser" in text

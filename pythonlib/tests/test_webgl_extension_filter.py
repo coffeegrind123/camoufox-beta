@@ -4,8 +4,8 @@ import sqlite3
 
 import orjson
 
-from camoufox.webgl import sample
-from camoufox.webgl.sample import DB_PATH, _load_webgl_data
+from camoufox import webgl_db
+from camoufox.webgl_db import DB_PATH, _load_webgl_data
 
 
 def _row_with(ext, key="webGl2:supportedExtensions", os="win"):
@@ -54,7 +54,7 @@ def test_draft_extensions_filtered_on_every_os():
 
 def test_sampled_windows_identities_can_carry_it():
     hits = sum(
-        "OVR_multiview2" in (sample.sample_webgl("win", seed=s).get("webGl2:supportedExtensions") or [])
+        "OVR_multiview2" in (webgl_db.sample_webgl("win", seed=s).get("webGl2:supportedExtensions") or [])
         for s in range(200)
     )
     assert hits > 0
