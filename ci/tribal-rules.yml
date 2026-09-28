@@ -97,7 +97,8 @@ rules:
       - "commit 8f9ff07: 'so a hung Xvfb fails fast instead of blocking forever'"
     rationale: >-
       A hung Xvfb with no timeout blocks the launch forever, at 0% CPU, with no
-      diagnostic. Ten seconds is the agreed bound.
+      diagnostic. Upstream bounds it at ten seconds; this fork uses thirty,
+      because a cold first Xvfb on a fresh host took up to 8.4 s to report.
     expect:
       module: camoufox.virtdisplay
       attribute: DISPLAYFD_READ_TIMEOUT_S
