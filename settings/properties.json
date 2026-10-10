@@ -74,6 +74,7 @@
   { "property": "media:spoof_codecs", "type": "bool" },
   { "property": "media:hwCodecs", "type": "array" },
   { "property": "fonts:metrics", "type": "str" },
+  { "property": "input:windowsKeyboard", "type": "bool" },
   { "property": "webGpu:limits", "type": "dict" },
   { "property": "allowMainWorld", "type": "bool" },
   { "property": "disableWorldIsolation", "type": "bool" },

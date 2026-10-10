@@ -1402,6 +1402,13 @@ def launch_options(
 
             config.setdefault('webGpu:limits', dict(WINDOWS_WEBGPU_LIMITS))
 
+            # Keyboard: Windows' shortcut tables instead of GTK's text bindings
+            # (Ctrl+Up/Down to line start/end, Alt+Backspace undo, Shift+Delete
+            # with no selection deletes), AltGr as keyCode 18 rather than 225,
+            # and Ctrl+Backspace/Delete in rich text deleting a word from a
+            # selection's start (windows-keyboard.patch).
+            config.setdefault('input:windowsKeyboard', True)
+
             # No sound device: 44100 Hz and 0 output channels, which no desktop
             # with speakers reports.
             for key, value in WINDOWS_AUDIO.items():

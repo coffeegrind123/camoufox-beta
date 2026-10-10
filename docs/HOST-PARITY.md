@@ -14,6 +14,7 @@ what a page reads, and how it is closed.
 | WebGPU limits from Vulkan | 14 of 36 limits differ from D3D12 | adapter reports `webGpu:limits`; requests validated against them, clamped to the real adapter for wgpu | `webgpu-limits-spoofing.patch` |
 | Glyph advances rounded | text widths whole pixels (953) vs fractional (953.0667) | forced subpixel positioning; widths and `<input>`/`<select>` widths then match exactly | launcher |
 | Line boxes from FreeType | Arial 16px 19/19 px vs 17/18; all 26 fonts measured differed | `fonts:metrics: "windows"`: DirectWrite's metrics from the same tables, Arial Black case included | `font-metrics-windows.patch` |
+| GTK keyboard | Ctrl+Up in `<textarea>` moved up a line (Windows: line start); Alt+Backspace no undo; Shift+Delete with nothing selected did nothing; Ctrl+/ selected all; AltGr `keyCode` 225 (Windows: 18); Ctrl+Backspace on a rich-text selection deleted only the selection | `input:windowsKeyboard`: Windows' shortcut tables replace GTK's text bindings, AltGr reports Alt, Windows' caret style in HTML editors. Set it `false` to keep Linux behaviour | `windows-keyboard.patch` |
 | GTK system colours | Highlight/SelectedItem/AccentColor Adwaita blue, dialog colours | Windows values via `ui.*` prefs | launcher |
 | No sound device | AudioContext 44100 Hz, 0 output channels | 48000 Hz, 2 channels | launcher |
 | Audio noise | OfflineAudioContext probe unique per identity; stock is 75.83002272993326 on every machine | `audio:seed` 0 by default | launcher |

@@ -848,6 +848,9 @@ jobs:
       - uses: ./.github/actions/prepare-browser
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - if: matrix.leg == 'parity'
+        # windows-keyboard sends real X11 key events.
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool x11-xkb-utils
       - run: |
           pip install -e pythonlib
           # fpgen downloads its model on first import with TLS verification

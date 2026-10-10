@@ -75,6 +75,7 @@ GROUPS: Dict[str, Tuple[str, ...]] = {
         "stock-parity-probes",
         "viewport-no-rdm",
         "windows-exe-manifest",
+        "windows-keyboard",
     ),
 }
 

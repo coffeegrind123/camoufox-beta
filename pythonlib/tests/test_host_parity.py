@@ -50,6 +50,7 @@ def test_windows_identity_gets_windows_look_and_feel(launch):
     assert config["fonts:metrics"] == "windows"
     assert config["media:hwCodecs"] == utils.WINDOWS_HW_CODECS
     assert config["webGpu:limits"] == utils.WINDOWS_WEBGPU_LIMITS
+    assert config["input:windowsKeyboard"] is True
 
 
 def test_macos_identity_gets_codecs_and_subpixel_only(launch):
@@ -60,6 +61,7 @@ def test_macos_identity_gets_codecs_and_subpixel_only(launch):
     assert "ui.highlight" not in prefs
     assert "dom.webgpu.enabled" not in prefs
     assert "AudioContext:sampleRate" not in config
+    assert "input:windowsKeyboard" not in config
 
 
 def test_linux_identity_on_linux_host_is_left_alone(launch):
@@ -67,6 +69,7 @@ def test_linux_identity_on_linux_host_is_left_alone(launch):
     assert "gfx.text.subpixel-position.force-enabled" not in prefs
     assert "media:spoof_codecs" not in config
     assert "ui.highlight" not in prefs
+    assert "input:windowsKeyboard" not in config
 
 
 def test_windows_identity_on_windows_host_is_left_alone(launch, monkeypatch):
@@ -75,16 +78,19 @@ def test_windows_identity_on_windows_host_is_left_alone(launch, monkeypatch):
     assert "gfx.text.subpixel-position.force-enabled" not in prefs
     assert "media:spoof_codecs" not in config
     assert "dom.webgpu.enabled" not in prefs
+    assert "input:windowsKeyboard" not in config
 
 
 def test_caller_values_win(launch):
     config, prefs = launch(
         WIN_UA,
-        config={"AudioContext:sampleRate": 44100, "media:spoof_codecs": False},
+        config={"AudioContext:sampleRate": 44100, "media:spoof_codecs": False,
+                "input:windowsKeyboard": False},
         firefox_user_prefs={"ui.highlight": "#ff0000", "dom.webgpu.enabled": False},
     )
     assert config["AudioContext:sampleRate"] == 44100
     assert config["media:spoof_codecs"] is False
+    assert config["input:windowsKeyboard"] is False
     assert prefs["ui.highlight"] == "#ff0000"
     assert prefs["dom.webgpu.enabled"] is False
 

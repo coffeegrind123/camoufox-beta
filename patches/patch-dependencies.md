@@ -44,6 +44,7 @@ be listed there.
 | `voice-spoofing.patch` | `voices:*` |
 | `webgl-spoofing.patch` | `webGl:*` |
 | `webrtc-ip-spoofing.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` |
+| `windows-keyboard.patch` | `input:windowsKeyboard` (also depends on `touchscreen-fingerprint-spoofing.patch` for `/camoucfg` in `dom/events`) |
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.
 
