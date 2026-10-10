@@ -170,21 +170,41 @@ diff --git a/widget/gtk/NativeKeyBindings.cpp b/widget/gtk/NativeKeyBindings.cpp
  #include "NativeKeyBindings.h"
  #include "nsString.h"
  #include "nsGtkKeyUtils.h"
-@@ -306,6 +307,14 @@ void NativeKeyBindings::GetEditCommands(const WidgetKeyboardEvent& aEvent,
+@@ -295,6 +296,14 @@ NativeKeyBindings::~NativeKeyBindings() {
+   g_object_unref(mNativeTarget);
+ }
+ 
++// Windows has no native text bindings: its shortcut tables, which ShortcutKeys
++// uses for an identity with "input:windowsKeyboard", are the whole behaviour.
++static bool CamouWindowsKeyboard() {
++  static const bool sWindowsKeyboard =
++      MaskConfig::GetBool("input:windowsKeyboard").value_or(false);
++  return sWindowsKeyboard;
++}
++
+ void NativeKeyBindings::GetEditCommands(const WidgetKeyboardEvent& aEvent,
+                                         const Maybe<WritingMode>& aWritingMode,
+                                         nsTArray<CommandInt>& aCommands) {
+@@ -306,6 +315,10 @@ void NativeKeyBindings::GetEditCommands(const WidgetKeyboardEvent& aEvent,
      return;
    }
  
-+  // Windows has no native text bindings: its shortcut tables, which
-+  // ShortcutKeys uses for this identity, are the whole behaviour.
-+  static const bool sWindowsKeyboard =
-+      MaskConfig::GetBool("input:windowsKeyboard").value_or(false);
-+  if (sWindowsKeyboard) {
++  if (CamouWindowsKeyboard()) {
 +    return;
 +  }
 +
    guint keyval;
    if (aEvent.mCharCode) {
      keyval = gdk_unicode_to_keyval(aEvent.mCharCode);
+@@ -405,7 +418,7 @@ void NativeKeyBindings::GetEditCommandsForTests(
+     const Maybe<WritingMode>& aWritingMode, nsTArray<CommandInt>& aCommands) {
+   MOZ_DIAGNOSTIC_ASSERT(aEvent.IsTrusted());
+ 
+-  if (aEvent.IsAlt() || aEvent.IsMeta()) {
++  if (aEvent.IsAlt() || aEvent.IsMeta() || CamouWindowsKeyboard()) {
+     return;
+   }
+ 
 diff --git a/widget/gtk/moz.build b/widget/gtk/moz.build
 --- a/widget/gtk/moz.build
 +++ b/widget/gtk/moz.build
