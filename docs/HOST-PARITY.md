@@ -21,6 +21,7 @@ what a page reads, and how it is closed.
 | WebGL `RENDERER` from the host | "Generic Renderer" next to an ANGLE `UNMASKED_RENDERER` | `RENDERER` answers the spoofed renderer too, as stock derives both from one string | `webgl-spoofing.patch` |
 | Display scale | 1536x864 screen at `devicePixelRatio` 1 (36% of Windows draws, 74% of macOS) | render at the drawn scale (`layout.css.devPixelsPerPx`); redraw if it cannot fit the monitor | launcher |
 | Geolocation precision | float32 coordinates, accuracy 6e-10 m | coordinates at database precision, IP-scale accuracy | launcher, `geolocation-spoofing.patch` |
+| Linux behaviour defaults | EME off ("EME has been preffed off"), middle click pastes the primary selection, double-click selects no trailing space, instant fullscreen, unstyled `<select>` popups, GTK scrollbar clicks | Windows' defaults (`WINDOWS_BEHAVIOUR_PREFS`) | launcher |
 | Font list in later processes | a context's 2nd..6th pages rendered a font its list refused | per-process "setter called" flag (lang315/camoufox#149) | `font-list-spoofing.patch`, `speech-voices-spoofing.patch` |
 
 Already at parity in cg.3 and re-checked: API surface (0 missing, 0 extra with the

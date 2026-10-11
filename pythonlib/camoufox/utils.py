@@ -67,6 +67,38 @@ WINDOWS_UI_COLORS: Dict[str, str] = {
     'ui.-moz-cellhighlight': '#cecece',
 }
 
+# Prefs whose Firefox 152.0.4 default differs between the Windows and Linux
+# builds (all.js, firefox.js, StaticPrefList.yaml), or that camoufox.cfg pins to
+# the Linux value, and that a page or the user can observe. Set to the Windows
+# default. Windows-only machinery (DirectComposition, ClearType, WMF) does
+# nothing in a Linux build and is left out.
+WINDOWS_BEHAVIOUR_PREFS: Dict[str, Any] = {
+    # Linux ships EME off: requestMediaKeySystemAccess('com.widevine.alpha')
+    # rejects with "EME has been preffed off", a message only Linux gives.
+    'media.eme.enabled': True,
+    # Double-click selects the word and its trailing space (camoufox.cfg: false).
+    'layout.word_select.eat_space_to_next_word': True,
+    # Middle click autoscrolls. Linux instead pastes the X11 primary selection,
+    # firing a paste event no Windows browser sends.
+    'general.autoScroll': True,
+    'middlemouse.paste': False,
+    'middlemouse.openNewWindow': False,
+    'middlemouse.scrollbarPosition': False,
+    'browser.tabs.searchclipboardfor.middleclick': False,
+    'clipboard.autocopy': False,
+    # Fullscreen transition timing (camoufox.cfg: "0 0").
+    'full-screen-api.transition-duration.enter': '200 200',
+    'full-screen-api.transition-duration.leave': '200 200',
+    # <select> dropdowns honour the page's styling.
+    'dom.forms.select.customstyling': True,
+    # Scrollbars: a track click pages rather than jumps (GTK otherwise reads the
+    # desktop setting), a thumb dragged far off snaps back, and holding on the
+    # track stops at the pointer.
+    'ui.scrollToClick': 0,
+    'slider.snapMultiplier': 6,
+    'layout.scrollbars.click_and_hold_track.continue_to_end': False,
+}
+
 # GPUAdapter.limits of stock Firefox 152.0.4 on Windows (wgpu's D3D12 backend),
 # measured 2026-09-24. The Linux host's Vulkan backend reports 14 of these
 # differently (maxBindingsPerBindGroup 1000000, minUniformBufferOffsetAlignment
@@ -1420,6 +1452,9 @@ def launch_options(
             # webgpu-limits-spoofing.patch.
             firefox_user_prefs.setdefault('dom.webgpu.enabled', True)
             firefox_user_prefs.setdefault('dom.webgpu.external-texture.enabled', True)
+
+            for pref, value in WINDOWS_BEHAVIOUR_PREFS.items():
+                firefox_user_prefs.setdefault(pref, value)
 
         # Per-language and generic fonts: the build only has its own platform's
         # font.name-list defaults, so a Windows identity drew Thai through

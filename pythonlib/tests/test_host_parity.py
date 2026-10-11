@@ -3,7 +3,8 @@
 Every expected value here was measured on stock Firefox 152.0.4 on Windows 10
 against this build on a Linux host claiming Windows (2026-09-24): subpixel glyph
 positioning, the Windows system colours, Web Audio's output device, WebGPU, the
-codec matrix, and real-time CSS animations.
+codec matrix, real-time CSS animations, and the Windows defaults of input,
+selection and DRM behaviour.
 """
 
 import pytest
@@ -53,6 +54,18 @@ def test_windows_identity_gets_windows_look_and_feel(launch):
     assert config["input:windowsKeyboard"] is True
 
 
+def test_windows_identity_gets_windows_behaviour(launch):
+    _, prefs = launch(WIN_UA)
+    for pref, value in utils.WINDOWS_BEHAVIOUR_PREFS.items():
+        assert prefs[pref] == value
+    # Spot checks against stock 152.0.4 on Windows, so an edit to the table
+    # cannot quietly agree with itself.
+    assert prefs["media.eme.enabled"] is True
+    assert prefs["middlemouse.paste"] is False
+    assert prefs["general.autoScroll"] is True
+    assert prefs["layout.word_select.eat_space_to_next_word"] is True
+
+
 def test_macos_identity_gets_codecs_and_subpixel_only(launch):
     config, prefs = launch(MAC_UA)
     assert prefs["gfx.text.subpixel-position.force-enabled"] is True
@@ -62,6 +75,7 @@ def test_macos_identity_gets_codecs_and_subpixel_only(launch):
     assert "dom.webgpu.enabled" not in prefs
     assert "AudioContext:sampleRate" not in config
     assert "input:windowsKeyboard" not in config
+    assert "middlemouse.paste" not in prefs
 
 
 def test_linux_identity_on_linux_host_is_left_alone(launch):
@@ -79,6 +93,7 @@ def test_windows_identity_on_windows_host_is_left_alone(launch, monkeypatch):
     assert "media:spoof_codecs" not in config
     assert "dom.webgpu.enabled" not in prefs
     assert "input:windowsKeyboard" not in config
+    assert "middlemouse.paste" not in prefs
 
 
 def test_caller_values_win(launch):
@@ -86,13 +101,15 @@ def test_caller_values_win(launch):
         WIN_UA,
         config={"AudioContext:sampleRate": 44100, "media:spoof_codecs": False,
                 "input:windowsKeyboard": False},
-        firefox_user_prefs={"ui.highlight": "#ff0000", "dom.webgpu.enabled": False},
+        firefox_user_prefs={"ui.highlight": "#ff0000", "dom.webgpu.enabled": False,
+                            "middlemouse.paste": True},
     )
     assert config["AudioContext:sampleRate"] == 44100
     assert config["media:spoof_codecs"] is False
     assert config["input:windowsKeyboard"] is False
     assert prefs["ui.highlight"] == "#ff0000"
     assert prefs["dom.webgpu.enabled"] is False
+    assert prefs["middlemouse.paste"] is True
 
 
 @pytest.mark.parametrize("ua", [WIN_UA, MAC_UA, LIN_UA])
