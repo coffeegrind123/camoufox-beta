@@ -3,8 +3,8 @@
 Every expected value here was measured on stock Firefox 152.0.4 on Windows 10
 against this build on a Linux host claiming Windows (2026-09-24): subpixel glyph
 positioning, the Windows system colours, Web Audio's output device, WebGPU, the
-codec matrix, real-time CSS animations, and the Windows defaults of input,
-selection and DRM behaviour.
+codec matrix, real-time CSS animations, the Windows CRT's Math results, and the
+Windows defaults of input, selection and DRM behaviour.
 """
 
 import pytest
@@ -54,8 +54,9 @@ def test_windows_identity_gets_windows_look_and_feel(launch):
     assert config["input:windowsKeyboard"] is True
 
 
-def test_windows_identity_gets_windows_behaviour(launch):
+def test_windows_identity_gets_windows_crt_math_and_behaviour(launch):
     _, prefs = launch(WIN_UA)
+    assert prefs["javascript.options.use_ucrt_math"] is True
     for pref, value in utils.WINDOWS_BEHAVIOUR_PREFS.items():
         assert prefs[pref] == value
     # Spot checks against stock 152.0.4 on Windows, so an edit to the table
@@ -75,6 +76,7 @@ def test_macos_identity_gets_codecs_and_subpixel_only(launch):
     assert "dom.webgpu.enabled" not in prefs
     assert "AudioContext:sampleRate" not in config
     assert "input:windowsKeyboard" not in config
+    assert "javascript.options.use_ucrt_math" not in prefs
     assert "middlemouse.paste" not in prefs
 
 
@@ -93,6 +95,7 @@ def test_windows_identity_on_windows_host_is_left_alone(launch, monkeypatch):
     assert "media:spoof_codecs" not in config
     assert "dom.webgpu.enabled" not in prefs
     assert "input:windowsKeyboard" not in config
+    assert "javascript.options.use_ucrt_math" not in prefs
     assert "middlemouse.paste" not in prefs
 
 
@@ -102,13 +105,14 @@ def test_caller_values_win(launch):
         config={"AudioContext:sampleRate": 44100, "media:spoof_codecs": False,
                 "input:windowsKeyboard": False},
         firefox_user_prefs={"ui.highlight": "#ff0000", "dom.webgpu.enabled": False,
-                            "middlemouse.paste": True},
+                            "javascript.options.use_ucrt_math": False, "middlemouse.paste": True},
     )
     assert config["AudioContext:sampleRate"] == 44100
     assert config["media:spoof_codecs"] is False
     assert config["input:windowsKeyboard"] is False
     assert prefs["ui.highlight"] == "#ff0000"
     assert prefs["dom.webgpu.enabled"] is False
+    assert prefs["javascript.options.use_ucrt_math"] is False
     assert prefs["middlemouse.paste"] is True
 
 
