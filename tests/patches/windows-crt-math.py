@@ -50,11 +50,16 @@ def mismatches(got):
     out = {}
     for phase in ("cold", "hot"):
         for name, values in want["results"].items():
-            bad = sum(1 for a, b in zip(got[phase][name], values) if a != b)
-            out[f"{phase} {name}"] = (bad, len(values))
-    bad = sum(1 for a, b in zip(got["constants"], want["constants"]) if a != b)
-    out["constant-folded"] = (bad, len(want["constants"]))
+            out[f"{phase} {name}"] = differing(got[phase][name], values)
+    out["constant-folded"] = differing(got["constants"], want["constants"])
     return out
+
+
+def differing(got, want):
+    """(differing, total); a missing result counts as differing, so a probe
+    that returns too little cannot pass."""
+    bad = sum(1 for a, b in zip(got, want) if a != b) + abs(len(want) - len(got))
+    return bad, len(want)
 
 
 def main() -> int:
