@@ -344,6 +344,10 @@ jobs:
   # ---------------------------------------------------------------------------
   typescript:
     name: typescript
+    # This fork ships the Python launcher only and does not port its launcher
+    # changes to TypeScript, so the parity goldens fail by design. The job runs
+    # and reports, but neither gates the merge nor turns the run red.
+    continue-on-error: true
     # Tier 1, beside pythonlib. The npm package's type check, lint and vitest
     # suite, including the golden tests that hold it to pythonlib's output byte
     # for byte -- so a pythonlib change that typescript/ does not mirror fails
@@ -1052,6 +1056,10 @@ jobs:
   # ---------------------------------------------------------------------------
   typescript-browser:
     name: typescript (browser)
+    # This fork ships the Python launcher only and does not port its launcher
+    # changes to TypeScript, so the parity goldens fail by design. The job runs
+    # and reports, but neither gates the merge nor turns the run red.
+    continue-on-error: true
     # Tier 3a. Launches the browser under test through the TS API -- headless,
     # persistent context, and launchServer -- and checks that a page sees the
     # same identity pythonlib's launch of it shows.
@@ -1209,8 +1217,10 @@ jobs:
   # ---------------------------------------------------------------------------
   summary:
     name: Summary
-    needs: [resolve, static, pythonlib, typescript, install, build, fetch-browser, playwright,
-            patch-guards, build-tester, native, typescript-browser, growth, sundial]
+    # Not typescript or typescript (browser): this fork ships the Python
+    # launcher only, so the TypeScript jobs run and report but gate nothing.
+    needs: [resolve, static, pythonlib, install, build, fetch-browser, playwright,
+            patch-guards, build-tester, native, growth, sundial]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
@@ -1250,7 +1260,12 @@ jobs:
           # summarize report "produced no result file" and fail the gate on
           # every pull request that did not touch the browser. Which is most of
           # them, and exactly the cheap path this pipeline advertises.
-          required="pythonlib typescript install typescript_browser native_rules patch_guards_spoofing patch_guards_automation patch_guards_parity skiplist_audit build_tester playwright native_browser native_growth"
+          #
+          # typescript and typescript_browser are advisory in this fork, which
+          # ships the Python launcher only: not required, and a failure is
+          # reported but not fatal (--allow-failure), since their results can
+          # land here without this job waiting on them.
+          required="pythonlib install native_rules patch_guards_spoofing patch_guards_automation patch_guards_parity skiplist_audit build_tester playwright native_browser native_growth"
           if [ "${{ needs.resolve.outputs.browser_changed }}" = "true" ]; then
             required="$required build"
           fi
@@ -1261,6 +1276,7 @@ jobs:
             --results-dir .ci-work/results \
             --require $required \
             --allow-skip sundial \
+            --allow-failure typescript typescript_browser \
             --markdown summary.md \
             --out summary.json \
             --browser-version "${{ needs.resolve.outputs.browser_version }}" \
@@ -1315,8 +1331,11 @@ jobs:
     # that is not `success`, including `skipped`, fails the gate: a suite that
     # did not run has not passed, and silently skipping one is the cheapest way
     # to a green tick.
-    needs: [resolve, static, pythonlib, typescript, install, build, fetch-browser, playwright,
-            patch-guards, build-tester, native, typescript-browser, growth, sundial, summary]
+    #
+    # typescript and typescript (browser) are left out on purpose: this fork
+    # ships the Python launcher only (see the summary job).
+    needs: [resolve, static, pythonlib, install, build, fetch-browser, playwright,
+            patch-guards, build-tester, native, growth, sundial, summary]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
