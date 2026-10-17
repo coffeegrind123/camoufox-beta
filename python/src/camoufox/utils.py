@@ -47,6 +47,7 @@ from .gpudisplay import GPU_PREFS, GpuDisplay, async_prove_gpu, prove_gpu, selec
 from .virtdisplay import VirtualDisplay
 from ._warnings import FallbackWarning, LeakWarning
 from .host_rendering import (
+    WINDOWS_WEBGPU_LIMITS,
     Gpu,
     add_canvas_placeholder,
     gpu_family,
@@ -1191,7 +1192,8 @@ def launch_options(
             browser launch) and raises ValueError unless it is a hardware GPU
             from the claimed GPU's vendor (NVIDIA, AMD, Intel or Apple); with
             no GPU named, one of that vendor's is drawn. The canvas is then
-            left uncovered and WebGPU hands the page the host's adapter.
+            left uncovered and WebGPU hands the page the host's adapter, with
+            Windows' adapter limits when a Windows identity runs elsewhere.
             Cannot be combined with canvas_noise=True or block_webgl.
             Default: False.
         **launch_options (Dict[str, Any]):
@@ -1854,6 +1856,14 @@ def launch_options(
     set_webgpu(
         firefox_user_prefs, target_os, (config.get('webGl:vendor'), config.get('webGl:renderer')), host, gpu_passthrough
     )
+    # A passed-through adapter reports the limits of the host's wgpu backend,
+    # not of D3D12 on the Windows Firefox the identity claims, and a release
+    # build off Windows leaves out GPUExternalTexture and navigator.gpu in
+    # service workers, which Windows ships on (StaticPrefList.yaml).
+    if gpu_passthrough and target_os == 'win' and _host_os_key() != 'win' and firefox_user_prefs['dom.webgpu.enabled']:
+        config.setdefault('webGpu:limits', dict(WINDOWS_WEBGPU_LIMITS))
+        firefox_user_prefs.setdefault('dom.webgpu.external-texture.enabled', True)
+        firefox_user_prefs.setdefault('dom.webgpu.service-workers.enabled', True)
 
     # Cache previous pages, requests, etc (uses more memory)
     if enable_cache:

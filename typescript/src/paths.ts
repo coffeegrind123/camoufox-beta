@@ -115,6 +115,7 @@ export interface LauncherConstants {
 	baselineMultiTouchPoints: number;
 	windowsHwCodecs: string[];
 	windowsUiColors: Record<string, string>;
+	windowsWebGpuLimits: Record<string, number>;
 	cachePrefs: Record<string, any>;
 	windowsBehaviourPrefs: Record<string, any>;
 }
