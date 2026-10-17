@@ -1,8 +1,12 @@
-"""A Windows identity on another host behaves as stock Windows Firefox does.
+"""Answers that come from the host must follow the claimed OS instead.
 
-Each value the launcher sets here was measured on stock Firefox on Windows
-against this build on a Linux host claiming Windows. On a Windows host the
-build already behaves that way, and a macOS or Linux identity is left as it is.
+A Windows identity on another host behaves as stock Windows Firefox does: the
+Windows CRT's Math results, Windows' keyboard, the Windows defaults of input,
+selection and DRM behaviour, and Windows' scrollbars. Each value the launcher
+sets here was measured on stock Firefox on Windows against this build on a
+Linux host claiming Windows. On a Windows host the build already behaves that
+way, and a macOS or Linux identity is left as it is. CSS animations run on
+stock timing for every identity.
 """
 
 import pytest
@@ -141,3 +145,10 @@ def test_scrollbars_on_a_windows_host_are_left_alone(launch, monkeypatch):
 def test_caller_scrollbar_style_wins(launch):
     _, prefs = launch(WIN_UA, firefox_user_prefs={SCROLLBAR_STYLE: 2})
     assert prefs[SCROLLBAR_STYLE] == 2
+
+
+@pytest.mark.parametrize("ua", [WIN_UA, MAC_UA, LIN_UA])
+def test_css_animations_run_in_real_time(launch, ua):
+    # Stock timing is the browser's default; instantAnimations opts out of it.
+    config, _ = launch(ua)
+    assert "instantAnimations" not in config
