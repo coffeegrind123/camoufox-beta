@@ -231,6 +231,7 @@ claims the host's OS. Details are in
 | Feature | How to use it | Where |
 |---|---|---|
 | Human cursor movement, replayed from 2356 recordings of real people ([Cursory](https://github.com/Vinyzu/cursory)) | `humanize=True`, or a number of seconds to cap each move | Juggler `input/` |
+| Human cursor movement synthesized by a trained network ([mousecrack](https://github.com/puffinsoft/mousecrack)) | `humanize=True, humanize_engine="mousecrack"` | Juggler `input/mousecrack/` |
 | Run code in the page's own world | `main_world_eval=True`, then `page.evaluate("mw:...")` | Juggler |
 | Finish animations at once so Playwright never waits | `config={"instantAnimations": True}` (detectable; warns) | `no-css-animations` patch |
 | Read closed shadow roots | `config={"forceScopeAccess": True}` | `shadow-root-bypass` patch |
