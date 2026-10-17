@@ -1911,7 +1911,7 @@ def test_the_workflow_checks_the_fetched_build():
 # ---------------------------------------------------------------------------
 
 
-def _required_suites(browser_changed: str, has_sundial: str) -> set:
+def _required_suites(browser_changed: str, has_sundial: str, repository: str = "daijro/camoufox") -> set:
     """Run the workflow's own `required=` assembly and report what it produced.
 
     Extracted and executed rather than pattern-matched, because the bug this
@@ -1929,7 +1929,7 @@ def _required_suites(browser_changed: str, has_sundial: str) -> set:
     block = block.replace("${{ needs.resolve.outputs.has_sundial }}", has_sundial)
     proc = subprocess.run(
         ["bash", "-c", block + '\necho "$required"'],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env={**os.environ, "REPOSITORY": repository},
     )
     assert proc.returncode == 0, proc.stderr
     return set(proc.stdout.split())
@@ -3194,3 +3194,15 @@ def test_typescript_jobs_do_not_gate_the_merge():
     }
     assert not required & {"typescript", "typescript_browser"}, sorted(required)
     assert "--allow-failure typescript typescript_browser" in text
+
+
+def test_the_install_gate_runs_on_upstream_only():
+    """It pins the packages to an upstream-style release tag, which this fork's
+    v<version>-<release>-cg.<n> tags are not, so here it is skipped, not
+    required, and allowed to be skipped by the gate."""
+    jobs = _jobs()
+    assert "github.repository == 'daijro/camoufox'" in jobs["install"]["if"]
+    assert "install" in _required_suites("true", "false")
+    assert "install" not in _required_suites("true", "false", "coffeegrind123/camoufox-beta")
+    gate = "\n".join(s.get("run") or "" for s in jobs["gate"]["steps"])
+    assert '"install": os.environ.get("REPOSITORY") != "daijro/camoufox"' in gate
