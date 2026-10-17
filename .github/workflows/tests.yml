@@ -422,8 +422,14 @@ jobs:
     # (EXDEV). Each installed package then launches the browser it fetched and
     # the browser under test, clicks and types on a local page, and checks
     # what the page saw, so it waits for the latter. See ci/run_install.py.
+    #
+    # Upstream only. It pins the packages to a release tagged the way
+    # release.yml tags them (v156.0.1-beta.32), and this fork, which publishes
+    # no packages, tags v156.0.1-beta.32-cg.8: there is nothing to pin.
     needs: [resolve, static, build, fetch-browser]
-    if: always() && (needs.build.result == 'success' || needs.fetch-browser.result == 'success')
+    if: >-
+      github.repository == 'daijro/camoufox' && always() &&
+      (needs.build.result == 'success' || needs.fetch-browser.result == 'success')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -1246,6 +1252,8 @@ jobs:
 
       - name: Summarize
         id: summarize
+        env:
+          REPOSITORY: ${{ github.repository }}
         run: |
           set +e
           # Suite names, not job names. `static` is a job; the suites it runs are
@@ -1265,7 +1273,10 @@ jobs:
           # ships the Python launcher only: not required, and a failure is
           # reported but not fatal (--allow-failure), since their results can
           # land here without this job waiting on them.
-          required="pythonlib install native_rules patch_guards_spoofing patch_guards_automation patch_guards_parity skiplist_audit build_tester playwright native_browser native_growth"
+          required="pythonlib native_rules patch_guards_spoofing patch_guards_automation patch_guards_parity skiplist_audit build_tester playwright native_browser native_growth"
+          if [ "$REPOSITORY" = "daijro/camoufox" ]; then
+            required="$required install"
+          fi
           if [ "${{ needs.resolve.outputs.browser_changed }}" = "true" ]; then
             required="$required build"
           fi
@@ -1346,6 +1357,7 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
           BROWSER_CHANGED: ${{ needs.resolve.outputs.browser_changed }}
           HAS_SUNDIAL: ${{ needs.resolve.outputs.has_sundial }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           python3 - <<'PY'
           import json, os, sys
@@ -1358,6 +1370,7 @@ jobs:
               "build": not built,
               "fetch-browser": built,
               "sundial": os.environ.get("HAS_SUNDIAL") != "true",
+              "install": os.environ.get("REPOSITORY") != "daijro/camoufox",
           }
 
           problems = []
