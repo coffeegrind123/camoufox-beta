@@ -70,6 +70,7 @@
     "maxComputeWorkgroupSizeZ": 64,
     "maxComputeWorkgroupsPerDimension": 65535
   },
+  "windowsHwCodecs": ["video/avc", "video/hevc", "video/vp9"],
   "cachePrefs": {
     "browser.sessionhistory.max_total_viewers": -1,
     "browser.cache.memory.enable": true,

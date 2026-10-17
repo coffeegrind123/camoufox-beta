@@ -114,6 +114,7 @@ export interface LauncherConstants {
 	baselineTaskbarHeight: Record<"win" | "mac" | "lin", number>;
 	baselineMultiTouchPoints: number;
 	windowsWebGpuLimits: Record<string, number>;
+	windowsHwCodecs: string[];
 	cachePrefs: Record<string, any>;
 	windowsBehaviourPrefs: Record<string, any>;
 }
