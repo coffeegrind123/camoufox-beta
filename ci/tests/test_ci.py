@@ -3164,3 +3164,33 @@ def test_the_install_gate_launches_and_interacts_through_each_installed_package(
     assert {"build", "fetch-browser"} <= set(install["needs"])
     runs = "\n".join(s.get("run") or "" for s in install["steps"])
     assert '--browser "$CAMOUFOX_BINARY"' in runs
+
+
+# ---------------------------------------------------------------------------
+# typescript: runs and reports in this fork, gates nothing
+# ---------------------------------------------------------------------------
+
+
+def test_typescript_jobs_do_not_gate_the_merge():
+    """This fork ships the Python launcher only; typescript/ is upstream's.
+
+    The TypeScript jobs still run, but a failure there must not turn "All tests
+    passed" red: not through the gate's needs, not through the summary's, and
+    not through a failing result file the summary happens to download.
+    """
+    jobs = _jobs()
+    for job in ("typescript", "typescript-browser"):
+        assert jobs[job].get("continue-on-error") is True, job
+    for job in ("gate", "summary"):
+        needs = set(jobs[job]["needs"])
+        assert not needs & {"typescript", "typescript-browser"}, f"{job} needs {sorted(needs)}"
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    required = {
+        part
+        for line in re.findall(r'required="([^"]*)"', text)
+        for part in line.split()
+        if not part.startswith("$")
+    }
+    assert not required & {"typescript", "typescript_browser"}, sorted(required)
+    assert "--allow-failure typescript typescript_browser" in text
