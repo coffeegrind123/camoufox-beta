@@ -114,6 +114,7 @@ export interface LauncherConstants {
 	baselineMultiTouchPoints: number;
 	windowsWebGpuLimits: Record<string, number>;
 	cachePrefs: Record<string, any>;
+	windowsBehaviourPrefs: Record<string, any>;
 }
 export const LAUNCHER_CONSTANTS: Readonly<LauncherConstants> = loadDataFile(
 	"launcher-constants.json",
