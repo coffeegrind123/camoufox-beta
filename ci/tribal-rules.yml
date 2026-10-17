@@ -575,17 +575,16 @@ rules:
   # Releases
   # -------------------------------------------------------------------------
 
-  - id: releases-ride-a-twice-monthly-train
-    title: A merge to main is tested, not released; releases ship on the 1st and 15th
+  - id: fork-releases-by-tag-to-no-registry
+    title: This fork releases one Linux x86_64 browser per tag and publishes no packages
     check: manual   # ci/tests/test_release.py
     evidence:
-      - "issue #863: seven browser prereleases (v156.0.1-beta.32 to beta.38) shipped between 2026-09-28 and 2026-10-13, one per merge"
-      - "PyPI and npm trusted publishing match the top-level workflow file, so publishing stays in release.yml rather than a reusable workflow"
+      - "coffeegrind123/camoufox-beta: releases v152.0.4-beta.31-cg.4 to cg.7, each a prerelease zip from build.yml"
+      - "upstream's release.yml (twice-monthly train, PyPI and npm trusted publishing) is removed, not disabled"
     rationale: >-
-      Releasing every merge gave users a new browser every few days, and stable
-      releases waited on a maintainer remembering to tag one. The train
-      promotes the newest prerelease to stable and cuts the next one from main
-      twice a month, so a prerelease has had two weeks of use before it becomes
-      stable. Weekly was considered and rejected as too many updates for users
-      to manage. A fix that cannot wait is cut by dispatching release.yml on
-      main, and an open issue labelled `regression` holds the promotion.
+      The fork's consumers run the Linux x86_64 zip in a Docker image, which
+      downloads it by its public release URL, so a release is that one zip,
+      published rather than drafted, when a tag is pushed. Upstream's train
+      would cut releases on a schedule and publish this fork's libraries to
+      registries it does not own; its other five build targets cost about ten
+      runner-hours a release for nothing.

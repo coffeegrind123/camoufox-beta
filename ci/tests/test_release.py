@@ -261,65 +261,6 @@ def test_the_pin_and_the_launchers_agree_on_its_format(tmp_path, monkeypatch):
         ("official", "156.0.1", "beta.33", "v156.0.1-beta.33")
 
 
-# The jobs each kind of run skips by design, and the jobs it must reach: a cut
-# (workflow_dispatch), a promotion by a pushed tag, and the train's promotion.
-CHANNELS = {
-    "prerelease": ({"promote-browser", "cut"},
-                   {"build-browser", "publish-browser", "build-library", "publish-pypi",
-                    "publish-npm", "tag-library"}),
-    "stable": ({"tests", "build-browser", "publish-browser", "tag-library", "cut"},
-               {"plan", "build-library", "promote-browser", "publish-pypi", "publish-npm"}),
-    "train": ({"tests", "build-browser", "publish-browser"},
-              {"plan", "build-library", "promote-browser", "publish-pypi", "publish-npm",
-               "tag-library", "cut"}),
-}
-
-
-@pytest.mark.parametrize("channel", CHANNELS)
-def test_no_job_a_channel_needs_is_skipped_by_a_job_it_skips(channel):
-    """A job whose `if` has no status function gets an implicit success(), which
-    is false when any job upstream of it -- not only its direct needs -- was
-    skipped. The first prerelease published to PyPI and skipped npm that way:
-    promote-browser, skipped on every push, sits upstream of publish-npm."""
-    jobs = yaml.safe_load((release.REPO_ROOT / ".github/workflows/release.yml")
-                          .read_text(encoding="utf-8"))["jobs"]
-
-    def needs(name):
-        n = jobs[name].get("needs", [])
-        return [n] if isinstance(n, str) else n
-
-    def upstream(name):
-        seen = set()
-        stack = list(needs(name))
-        while stack:
-            job = stack.pop()
-            if job not in seen:
-                seen.add(job)
-                stack.extend(needs(job))
-        return seen
-
-    skipped, required = CHANNELS[channel]
-    unguarded = [
-        name for name in sorted(required)
-        if upstream(name) & skipped
-        and not re.search(r"!cancelled\(\)|always\(\)", str(jobs[name].get("if", "")))
-    ]
-    assert not unguarded, f"{channel}: skipped by an upstream job it does not need: {unguarded}"
-
-
-def test_npm_publish_is_given_a_local_path():
-    """npm reads `dir/file.tgz` as a GitHub owner/repo and tries to clone it; the
-    first npm publish failed that way. A local tarball needs `./` or `/`."""
-    jobs = yaml.safe_load((release.REPO_ROOT / ".github/workflows/release.yml")
-                          .read_text(encoding="utf-8"))["jobs"]
-    runs = [step["run"] for job in jobs.values() for step in job.get("steps", [])
-            if "npm publish" in step.get("run", "")]
-    assert runs
-    for run in runs:
-        target = re.search(r"npm publish\s+(\S+)", run).group(1)
-        assert target.startswith(("./", "/")), f"not a local path to npm: {target}"
-
-
 def _wheel(tmp_path, version, body=b"print('hi')\n"):
     import zipfile
 
@@ -373,17 +314,6 @@ def test_a_package_that_differs_only_in_its_version_is_not_new(tmp_path, build):
     assert release.changed_since_published(new, ver(new), [], spelling, fetch, "x")[0] is True
 
 
-def test_each_registry_is_published_only_when_its_own_package_changed():
-    jobs = yaml.safe_load((release.REPO_ROOT / ".github/workflows/release.yml")
-                          .read_text(encoding="utf-8"))["jobs"]
-    assert "outputs.publish_pypi == 'true'" in jobs["publish-pypi"]["if"]
-    assert "outputs.publish_npm == 'true'" in jobs["publish-npm"]["if"]
-    # npm must not depend on PyPI having published: a TypeScript-only change skips PyPI.
-    assert "needs.publish-pypi.result == 'skipped'" in jobs["publish-npm"]["if"]
-    steps = jobs["build-library"]["steps"]
-    assert any("ci.release lib-diff" in s.get("run", "") for s in steps)
-
-
 def test_the_manifest_declares_the_interface_both_libraries_speak():
     """Python and TypeScript must refuse the same browsers (#835)."""
     interface = release.browser_interface()
@@ -394,3 +324,18 @@ def test_the_manifest_declares_the_interface_both_libraries_speak():
     ts_min = re.search(r"^\s*static readonly MIN_INTERFACE: number = (\d+);$", ts, re.M)
     py_min = re.search(r"^\s*MIN_INTERFACE = (\d+)$", py, re.M)
     assert ts_min and py_min and ts_min[1] == py_min[1], "MIN_INTERFACE differs between the libraries"
+
+
+def test_this_fork_releases_by_tag_and_publishes_to_no_registry():
+    """coffeegrind123/camoufox-beta ships one browser zip per tag (build.yml).
+
+    Upstream's release.yml cuts on a schedule and publishes to PyPI and npm;
+    merged in from upstream it would run here. Keep it out.
+    """
+    workflows = release.REPO_ROOT / ".github" / "workflows"
+    assert not (workflows / "release.yml").exists()
+    build = yaml.safe_load((workflows / "build.yml").read_text(encoding="utf-8"))
+    matrix = build["jobs"]["build"]["strategy"]["matrix"]
+    assert (matrix["target"], matrix["arch"]) == (["linux"], ["x86_64"])
+    text = (workflows / "build.yml").read_text(encoding="utf-8")
+    assert "python3 -m ci.pgo fetch --require" in text
