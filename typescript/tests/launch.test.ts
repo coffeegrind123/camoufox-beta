@@ -444,7 +444,7 @@ describe("test_launch_environment: prefs", () => {
 		});
 	});
 
-	// test_windows_identity.py
+	// test_host_parity.py
 	describe("a Windows identity on another host behaves as Windows", () => {
 		const STYLE = "widget.non-native-theme.scrollbar.style";
 		const onHost = async (host: "lin" | "win", u: string, extra = {}) => {
