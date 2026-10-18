@@ -48,11 +48,11 @@ import {
 	addCanvasPlaceholder,
 	type Gpu,
 	gpuFamily,
-	WINDOWS_WEBGPU_LIMITS,
 	hasCanvasPlaceholder,
 	hostGpu,
 	rendersOnHardware,
 	setWebgpu,
+	WINDOWS_WEBGPU_LIMITS,
 } from "./host_rendering.js";
 import {
 	type ProxyConfig,
@@ -1174,7 +1174,10 @@ export async function hostIdentity(
 		const config = JSON.parse(camouConfigBlob(fromOptions) || "{}");
 		const vendor = config["webGl:vendor"];
 		const renderer = config["webGl:renderer"];
-		return [getTargetOs(config), vendor && renderer ? [vendor, renderer] : null];
+		return [
+			getTargetOs(config),
+			vendor && renderer ? [vendor, renderer] : null,
+		];
 	}
 	const prefs = fromOptions.firefoxUserPrefs ?? {};
 	if (canvasNoise != null || hasCanvasPlaceholder(prefs)) return null;

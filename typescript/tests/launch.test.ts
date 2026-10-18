@@ -1294,9 +1294,9 @@ describe.skipIf(!MODEL.ok)(
 			).toBe(0);
 			const preset = fingerprints.getRandomPreset("windows", "150");
 			expect(
-				(await launchConfig({ fingerprint_preset: preset, audio_noise: false }))[
-					"audio:seed"
-				],
+				(
+					await launchConfig({ fingerprint_preset: preset, audio_noise: false })
+				)["audio:seed"],
 			).toBe(0);
 		});
 
