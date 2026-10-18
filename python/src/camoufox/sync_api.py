@@ -13,6 +13,8 @@ from camoufox.virtdisplay import VirtualDisplay
 from .fingerprints import generate_context_fingerprint
 from .ip import Proxy, proxy_exit_geo
 from .utils import (
+    DEFAULT_AUDIO_NOISE,
+    DEFAULT_CANVAS_NOISE,
     attach_context_defaults,
     context_audio,
     context_identity,
@@ -117,11 +119,11 @@ def NewBrowser(
         # Options the caller built leave its contexts to the caller (host_identity).
         canvas_noise: Optional[bool] = False
         gpu_passthrough = False
-        audio_noise = True
+        audio_noise = DEFAULT_AUDIO_NOISE
         if not from_options:
-            canvas_noise = kwargs.get('canvas_noise')
+            canvas_noise = kwargs.get('canvas_noise', DEFAULT_CANVAS_NOISE)
             gpu_passthrough = bool(kwargs.get('gpu_passthrough'))
-            audio_noise = kwargs.get('audio_noise', True) is not False
+            audio_noise = bool(kwargs.get('audio_noise', DEFAULT_AUDIO_NOISE))
             # Opt-in (2026-09-17). Pinning keeps the identity's core count by
             # constraining the browser to that many cores; it costs real CPU, needs
             # a launch lock, and does nothing on macOS. What it defends against is a

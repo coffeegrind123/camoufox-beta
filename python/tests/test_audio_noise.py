@@ -1,11 +1,11 @@
 """audio_noise=False renders Web Audio as stock Firefox does.
 
-By default the launchers seed Web Audio noise per identity, so a returning
+Upstream's launchers seed Web Audio noise per identity, so a returning
 identity reproduces its own audio hash (#442/#765). Stock Firefox renders the
 standard OfflineAudioContext probe to the same value on every machine
-measured, so a caller can opt out of the noise: the launch then sends seed 0,
-which the browser reads as no noise, and NewContext contexts of that browser
-follow it.
+measured, so this fork defaults to stock audio (utils.DEFAULT_AUDIO_NOISE):
+the launch sends seed 0, which the browser reads as no noise, and NewContext
+contexts of that browser follow it. audio_noise=True gives upstream's noise.
 
 Run with:
     cd python && python -m pytest tests/test_audio_noise.py -v
@@ -48,8 +48,11 @@ def seed_of(init_script):
 
 
 class TestLaunch:
-    def test_the_default_seeds_noise(self):
-        assert launch()["audio:seed"] != 0
+    def test_the_default_renders_stock_audio(self):
+        assert launch()["audio:seed"] == 0
+
+    def test_on_seeds_noise(self):
+        assert launch(audio_noise=True)["audio:seed"] != 0
 
     def test_off_renders_stock_audio(self):
         assert launch(audio_noise=False)["audio:seed"] == 0
@@ -73,9 +76,14 @@ def browser(audio_noise=None):
 
 
 class TestContexts:
-    @pytest.mark.parametrize("audio_noise", [None, True])
-    def test_a_context_draws_its_own_seed_by_default(self, audio_noise):
-        b = browser(audio_noise)
+    def test_a_context_of_a_browser_with_no_record_has_stock_audio(self):
+        b = browser(None)
+        sync_api.NewContext(b, os="linux")
+
+        assert seed_of(b.new_context.return_value.add_init_script.call_args.args[0]) == 0
+
+    def test_a_context_of_a_noised_browser_draws_its_own_seed(self):
+        b = browser(True)
         sync_api.NewContext(b, os="linux")
 
         assert seed_of(b.new_context.return_value.add_init_script.call_args.args[0]) != 0
@@ -98,7 +106,7 @@ class TestContexts:
 
 @pytest.mark.parametrize(
     "kwargs, recorded",
-    [({}, True), ({"audio_noise": True}, True), ({"audio_noise": False}, False)],
+    [({}, False), ({"audio_noise": True}, True), ({"audio_noise": False}, False)],
 )
 def test_new_browser_records_the_choice_for_its_contexts(kwargs, recorded):
     playwright = mock.MagicMock()

@@ -62,6 +62,9 @@ def on_host(gpu, os_key="lin"):
 
 def launch(**kwargs):
     kwargs.setdefault("i_know_what_im_doing", True)
+    # These cases test upstream's automatic cover (canvas_noise=None); this
+    # fork's default never covers (TestForkDefault).
+    kwargs.setdefault("canvas_noise", None)
     options = utils.launch_options(**kwargs)
     env = options["env"]
     chunks = sorted(
@@ -142,6 +145,26 @@ class TestHostOs:
 
         assert placeholder(options)
         assert probes == []
+
+
+class TestForkDefault:
+    """Without canvas_noise this fork never covers the canvas (utils.DEFAULT_CANVAS_NOISE)."""
+
+    def test_another_os_is_uncovered_without_a_warning_or_probe(self):
+        with on_host(HOST_GPU) as probes, warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            options = utils.launch_options(os="windows", i_know_what_im_doing=True)
+
+        assert utils.DEFAULT_CANVAS_NOISE is False
+        assert not placeholder(options)
+        assert not any("canvas_noise" in str(w.message) for w in caught)
+        assert probes == []
+
+    def test_a_named_gpu_is_uncovered(self):
+        with on_host(HOST_GPU):
+            options = utils.launch_options(os="linux", webgl_config=OTHER_GPU, i_know_what_im_doing=True)
+
+        assert not placeholder(options)
 
 
 class TestAnotherOs:

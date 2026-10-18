@@ -15,6 +15,8 @@ from camoufox.virtdisplay import VirtualDisplay
 from .fingerprints import generate_context_fingerprint
 from .ip import Proxy, proxy_exit_geo
 from .utils import (
+    DEFAULT_AUDIO_NOISE,
+    DEFAULT_CANVAS_NOISE,
     async_attach_vd,
     attach_context_defaults,
     context_audio,
@@ -115,11 +117,11 @@ async def AsyncNewBrowser(
         # Options the caller built leave its contexts to the caller (host_identity).
         canvas_noise: Optional[bool] = False
         gpu_passthrough = False
-        audio_noise = True
+        audio_noise = DEFAULT_AUDIO_NOISE
         if not from_options:
-            canvas_noise = kwargs.get('canvas_noise')
+            canvas_noise = kwargs.get('canvas_noise', DEFAULT_CANVAS_NOISE)
             gpu_passthrough = bool(kwargs.get('gpu_passthrough'))
-            audio_noise = kwargs.get('audio_noise', True) is not False
+            audio_noise = bool(kwargs.get('audio_noise', DEFAULT_AUDIO_NOISE))
             # Opt-in; see the note in sync_api.NewBrowser.
             kwargs.setdefault('pin_cpu_cores', False)
             from_options = await asyncio.get_event_loop().run_in_executor(

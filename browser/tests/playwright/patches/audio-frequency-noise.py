@@ -71,7 +71,9 @@ PROBE = """async () => {
 async def main() -> int:
     from camoufox.async_api import AsyncCamoufox
 
-    async with AsyncCamoufox(headless=True, os="linux", i_know_what_im_doing=True,
+    # audio_noise=True: the noise is what this guard checks, and this fork's
+    # launchers default to stock audio.
+    async with AsyncCamoufox(headless=True, os="linux", i_know_what_im_doing=True, audio_noise=True,
                              executable_path=str(resolve_binary())) as browser:
         page = await browser.new_page()
         got = await page.evaluate(PROBE)

@@ -92,5 +92,6 @@ def test_fresh_draws_are_not_redrawn_when_off(monkeypatch, isolated_launch_depen
         headless=False,
         screen=Screen(max_width=1920, max_height=1080),
         i_know_what_im_doing=True,
+        display_scale=False,
     )
     assert next(draws) == draw(1440, 900, 1)

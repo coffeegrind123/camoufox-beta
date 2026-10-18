@@ -620,8 +620,8 @@ def test_audio_noise_follows_the_identity_unless_the_caller_opts_out():
     added = "\n".join(line[1:] for line in manager.splitlines() if line.startswith("+"))
     assert re.search(r"RoverfoxStorageManager::GetUint\([^;]*?seed\)\s*&&\s*seed != 0", added), why
 
-    assert inspect.signature(utils.launch_options).parameters["audio_noise"].default is True, why
-    assert utils.context_audio(SimpleNamespace()) is None, why
+    assert inspect.signature(utils.launch_options).parameters["audio_noise"].default is utils.DEFAULT_AUDIO_NOISE, why
+    assert utils.context_audio(SimpleNamespace(_camoufox_audio_noise=True)) is None, why
     assert utils.context_audio(SimpleNamespace(_camoufox_audio_noise=False)) == {"audio:seed": 0}, why
 
     sys.path.insert(0, str(REPO_ROOT))
@@ -630,6 +630,18 @@ def test_audio_noise_follows_the_identity_unless_the_caller_opts_out():
     assert "uniqueAudio" in _MUST_VARY, why
     ts = (REPO_ROOT / "typescript" / "src" / "utils.ts").read_text(encoding="utf-8")
     assert 'audio_noise === false' in ts and '{ "audio:seed": 0 }' in ts, why
+
+
+def test_fork_keeps_its_defaults():
+    """This fork's main defaults to its own behaviour; the PRs keep upstream's."""
+    from camoufox import utils
+
+    why = explain("fork-keeps-its-defaults")
+    assert (utils.DEFAULT_AUDIO_NOISE, utils.DEFAULT_CANVAS_NOISE, utils.DEFAULT_DISPLAY_SCALE) == (False, False, True), why
+    params = inspect.signature(utils.launch_options).parameters
+    assert params["audio_noise"].default is utils.DEFAULT_AUDIO_NOISE, why
+    assert params["canvas_noise"].default is utils.DEFAULT_CANVAS_NOISE, why
+    assert params["display_scale"].default is utils.DEFAULT_DISPLAY_SCALE, why
 
 
 def test_cross_os_canvas_is_rfps_placeholder_and_spoofs_feed_baseline_protection():

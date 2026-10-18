@@ -59,6 +59,14 @@ from .webgl import firefox_gpus, sample_webgl_for_screen, webgl_for_gpu
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
 
+# This fork's defaults where they differ from upstream's (camoufox-beta only;
+# the upstream pull requests keep upstream's): stock Web Audio, the canvas never
+# covered with random data, and rendering at the identity's display scale --
+# the behaviour of every cg release up to cg.7.
+DEFAULT_CANVAS_NOISE: Optional[bool] = False
+DEFAULT_AUDIO_NOISE = False
+DEFAULT_DISPLAY_SCALE = True
+
 # Camoufox preferences to cache previous pages and requests
 CACHE_PREFS: Dict[str, Any] = LAUNCHER_CONSTANTS['cachePrefs']
 
@@ -918,7 +926,7 @@ def context_identity(
 def context_audio(browser: Any) -> Optional[Dict[str, Any]]:
     """Config overrides for a new context's audio: a browser launched with
     audio_noise=False gives its contexts stock audio, as its own pages have."""
-    if vars(browser).get('_camoufox_audio_noise', True):
+    if vars(browser).get('_camoufox_audio_noise', DEFAULT_AUDIO_NOISE):
         return None
     return {'audio:seed': 0}
 
@@ -1038,10 +1046,10 @@ def launch_options(
     debug: Optional[bool] = None,
     virtual_display: Optional[str] = None,
     pin_cpu_cores: Optional[bool] = None,
-    canvas_noise: Optional[bool] = None,
+    canvas_noise: Optional[bool] = DEFAULT_CANVAS_NOISE,
     gpu_passthrough: bool = False,
-    audio_noise: bool = True,
-    display_scale: Optional[bool] = None,
+    audio_noise: bool = DEFAULT_AUDIO_NOISE,
+    display_scale: Optional[bool] = DEFAULT_DISPLAY_SCALE,
     **launch_options: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
@@ -1153,11 +1161,12 @@ def launch_options(
         canvas_noise (Optional[bool]):
             Replace canvas and WebGL readback with random data, as
             privacy.resistFingerprinting does in LibreWolf, Tor Browser and
-            Mullvad Browser. Stock Firefox does not, so it warns. By default
-            (None) the identity on the host's OS claims the GPU the host
-            renders with, uncovered; it is on whenever the identity claims
-            another OS or another GPU (webgl_config, a preset's, or a host GPU
-            fpgen never recorded), whose canvas would otherwise show the host.
+            Mullvad Browser. Stock Firefox does not, so it warns. Default
+            False: never covered. With None the identity on the host's OS
+            claims the GPU the host renders with, uncovered, and it is on
+            whenever the identity claims another OS or another GPU
+            (webgl_config, a preset's, or a host GPU fpgen never recorded),
+            whose canvas would otherwise show the host.
         gpu_passthrough (bool):
             The host renders on the GPU the identity claims, under another OS:
             a Linux container driving a Windows host's GPU through WSL's d3d12
@@ -1171,7 +1180,7 @@ def launch_options(
             Default: False.
         audio_noise (bool):
             Perturb Web Audio output with a seed that follows the identity, so
-            each identity has its own audio hash (the default). With False the
+            each identity has its own audio hash. Default False: with False the
             browser renders audio as stock Firefox does: every machine
             measured renders the standard OfflineAudioContext probe to the
             same value, so no identity has a unique one. Contexts made with
@@ -1182,7 +1191,7 @@ def launch_options(
             instead of at 1, so devicePixelRatio, the resolution media queries
             and CSS geometry agree as on the real machine: a 1536x864 screen is
             a 1920x1080 panel at 125%. Headful on a real monitor, the identity
-            must also fit it physically at that scale. Off by default.
+            must also fit it physically at that scale. On by default.
         **launch_options (Dict[str, Any]):
             Additional Firefox launch options.
     """

@@ -38,6 +38,8 @@ def launch(**kwargs):
     kwargs.setdefault("os", "linux")
     kwargs.setdefault("headless", True)
     kwargs.setdefault("i_know_what_im_doing", True)
+    # The noise seeds are what these tests check; this fork's default sends 0.
+    kwargs.setdefault("audio_noise", True)
     with host():
         return config_of(utils.launch_options(**kwargs))
 

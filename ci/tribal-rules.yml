@@ -254,10 +254,25 @@ rules:
       reproduces its own audio hash (#442/#765), and build-tester requires
       audio to vary between contexts. A unique audio hash is also something no
       stock Firefox has: every machine measured renders the standard probe to
-      the same value. audio_noise=False (launch option, default True) sends
-      seed 0 so the browser renders as stock, and NewContext contexts of that
-      browser get seed 0 too; an audio:seed the caller sets wins either way.
-      The default and build-tester's uniqueAudio check stay as they are.
+      the same value. audio_noise=False sends seed 0 so the browser renders as
+      stock, and NewContext contexts of that browser get seed 0 too; an
+      audio:seed the caller sets wins either way. Upstream's default is True;
+      this fork's is False (fork-keeps-its-defaults). build-tester's
+      uniqueAudio check sets its seeds itself and is unaffected.
+
+  - id: fork-keeps-its-defaults
+    title: This fork defaults to stock audio, an uncovered canvas and the identity's display scale
+    check: automated
+    evidence:
+      - "every cg release up to cg.7 behaved this way; the consumers (tennisnews, sbox-learn-docs, cs16) rely on it"
+    rationale: >-
+      The pull requests to daijro/camoufox keep upstream's defaults so they
+      can be accepted there: audio_noise=True, canvas_noise=None (cover the
+      canvas when the identity claims another OS or GPU) and
+      display_scale=False. This fork's main flips only the defaults, in
+      utils.DEFAULT_AUDIO_NOISE, DEFAULT_CANVAS_NOISE and DEFAULT_DISPLAY_SCALE,
+      so each behaviour is still one explicit argument away and merging
+      upstream touches nothing but those three lines.
 
   - id: cross-os-canvas-is-the-rfp-placeholder
     title: On the host's OS the identity claims the host's GPU; on another OS or GPU canvas readback is RFP's random placeholder
