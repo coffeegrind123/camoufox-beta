@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -614,7 +615,10 @@ def test_audio_noise_follows_the_identity_unless_the_caller_opts_out():
     why = explain("audio-noise-is-opt-out")
     manager = (BROWSER / "patches" / "audio-fingerprint-manager.patch").read_text(encoding="utf-8")
     assert "if (seed == 0 || length == 0 || !data) {" in manager, why
-    assert "RoverfoxStorageManager::GetUint(key, seed) && seed != 0" in manager, why
+    # A context whose stored seed is 0 falls through to the launch seed, so
+    # audio:seed=0 at launch is stock audio for every context.
+    added = "\n".join(line[1:] for line in manager.splitlines() if line.startswith("+"))
+    assert re.search(r"RoverfoxStorageManager::GetUint\([^;]*?seed\)\s*&&\s*seed != 0", added), why
 
     assert inspect.signature(utils.launch_options).parameters["audio_noise"].default is True, why
     assert utils.context_audio(SimpleNamespace()) is None, why
