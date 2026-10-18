@@ -228,7 +228,9 @@ def probe_wheel(binary, port, humanize, scale=None, identity_dpr=None):
 
     prefs = {"layout.css.devPixelsPerPx": str(scale)} if scale else {}
     config = {"window.devicePixelRatio": float(identity_dpr)} if identity_dpr else {}
-    with Camoufox(headless=True, executable_path=str(binary), humanize=humanize,
+    # display_scale=False: the real scale is `scale` alone, never the identity's
+    # (this fork renders at the identity's scale by default).
+    with Camoufox(headless=True, executable_path=str(binary), humanize=humanize, display_scale=False,
                   firefox_user_prefs=prefs, config=config, i_know_what_im_doing=True) as b:
         page = b.new_page()
         page.goto(f"http://localhost:{port}/")
