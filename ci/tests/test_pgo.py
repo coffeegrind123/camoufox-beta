@@ -53,7 +53,7 @@ class Args:
 def test_the_shipped_config_names_the_tree_version_and_mozillas_rust():
     cfg = json.loads(pgo.CONFIG_PATH.read_text())
     assert cfg["firefox"] == pgo.read_upstream_sh()["version"]
-    # Mozilla builds 156 with Rust 1.95.0, LLVM 22 like its bootstrapped clang.
+    # Mozilla builds 158 with Rust 1.95.0, LLVM 22 like its bootstrapped clang.
     assert cfg["rust"] == "1.95.0"
 
 

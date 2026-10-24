@@ -718,6 +718,16 @@ def test_no_canvas_seed_is_declared_or_sent():
         )
 
 
+def test_fork_keeps_its_defaults():
+    """This fork's main never covers the canvas by default; the PRs keep upstream's."""
+    from camoufox import utils
+
+    why = explain("fork-keeps-its-defaults")
+    assert utils.DEFAULT_CANVAS_NOISE is False, why
+    assert inspect.signature(utils.launch_options).parameters["canvas_noise"].default is utils.DEFAULT_CANVAS_NOISE, why
+    assert utils.LAUNCHER_CONSTANTS["windowsBehaviourPrefs"].get("media.eme.enabled") is True, why
+
+
 def test_cross_os_canvas_is_rfps_placeholder_and_spoofs_feed_baseline_protection():
     """The canvas cover is Firefox's RFP targets, identical in both launchers,
     and spoofed values go through baseline protection with the claimed OS."""

@@ -1,5 +1,5 @@
 {
-  "firefox": "156.0.1",
+  "firefox": "158.0",
   "rust": "1.95.0",
   "profile": {
     "repository": "coffeegrind123/camoufox-beta",

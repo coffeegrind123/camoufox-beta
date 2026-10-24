@@ -60,6 +60,12 @@ from .webgl import firefox_gpus, sample_webgl_for_screen, webgl_for_gpu
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
 
+# This fork's default where it differs from upstream's (camoufox-beta only;
+# the upstream pull requests keep upstream's): the canvas is never covered
+# with random readback, as in every cg release. canvas_noise=None gives
+# upstream's automatic cover for another OS or GPU.
+DEFAULT_CANVAS_NOISE: Optional[bool] = False
+
 # Camoufox preferences to cache previous pages and requests
 CACHE_PREFS: Dict[str, Any] = LAUNCHER_CONSTANTS['cachePrefs']
 
@@ -1067,7 +1073,7 @@ def launch_options(
     debug: Optional[bool] = None,
     virtual_display: Optional[str] = None,
     pin_cpu_cores: Optional[bool] = None,
-    canvas_noise: Optional[bool] = None,
+    canvas_noise: Optional[bool] = DEFAULT_CANVAS_NOISE,
     gpu_passthrough: bool = False,
     **launch_options: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -1181,9 +1187,10 @@ def launch_options(
         canvas_noise (Optional[bool]):
             Replace canvas and WebGL readback with random data, as
             privacy.resistFingerprinting does in LibreWolf, Tor Browser and
-            Mullvad Browser. Stock Firefox does not, so it warns. By default
-            (None) the identity on the host's OS claims the GPU the host
-            renders with, uncovered; it is on whenever the identity claims
+            Mullvad Browser. Stock Firefox does not, so it warns. Default
+            False: never covered. With None the identity on the host's OS
+            claims the GPU the host renders with, uncovered, and it is on
+            whenever the identity claims
             another OS or another GPU (webgl_config, a preset's, or a host GPU
             fpgen never recorded), whose canvas would otherwise show the host.
         gpu_passthrough (bool):

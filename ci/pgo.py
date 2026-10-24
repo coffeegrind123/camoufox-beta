@@ -19,8 +19,8 @@ two stages, and so is this one:
      rebuilds.
 
 Cross-language LTO hands Rust bitcode to lld, so rustc's LLVM may not be newer
-than clang's. The bootstrapped clang for 156 is 22 (linux64-clang in
-taskcluster/kinds/toolchain/clang.yml); Mozilla builds 156 with Rust 1.95.0
+than clang's. The bootstrapped clang for 158 is 22 (linux64-clang in
+taskcluster/kinds/toolchain/clang.yml); Mozilla builds 158 with Rust 1.95.0
 (linux64-rust in taskcluster/kinds/toolchain/rust.yml), whose LLVM is 22 too.
 rustup's stable can be newer than the clang, so the Rust version is pinned.
 

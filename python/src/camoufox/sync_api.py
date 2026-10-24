@@ -13,6 +13,7 @@ from camoufox.virtdisplay import VirtualDisplay
 from .fingerprints import generate_context_fingerprint
 from .ip import Proxy, proxy_exit_geo
 from .utils import (
+    DEFAULT_CANVAS_NOISE,
     attach_context_defaults,
     context_identity,
     host_identity,
@@ -133,7 +134,7 @@ def _launch(
     canvas_noise: Optional[bool] = False
     gpu_passthrough = False
     if not from_options:
-        canvas_noise = kwargs.get('canvas_noise')
+        canvas_noise = kwargs.get('canvas_noise', DEFAULT_CANVAS_NOISE)
         gpu_passthrough = bool(kwargs.get('gpu_passthrough'))
         # Opt-in (2026-09-17). Pinning keeps the identity's core count by
         # constraining the browser to that many cores; it costs real CPU, needs

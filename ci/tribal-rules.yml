@@ -353,6 +353,18 @@ rules:
       the audio hash with the values that must match across contexts, and the
       audio-matches-stock guard checks the build against the recorded values.
 
+  - id: fork-keeps-its-defaults
+    title: This fork never covers the canvas by default, and turns EME on for Windows identities
+    check: automated
+    evidence:
+      - "every cg release behaved this way; the consumers (tennisnews, sbox-learn-docs, cs16) rely on it"
+    rationale: >-
+      The pull requests to daijro/camoufox keep upstream's defaults so they
+      can be accepted there: canvas_noise=None covers the canvas when the
+      identity claims another OS or GPU. This fork's main flips only that
+      default, in utils.DEFAULT_CANVAS_NOISE, so upstream's behaviour is one
+      explicit argument away and merging upstream touches one line.
+
   - id: cross-os-canvas-is-the-rfp-placeholder
     title: On the host's OS the identity claims the host's GPU; on another OS or GPU canvas readback is RFP's random placeholder
     check: automated

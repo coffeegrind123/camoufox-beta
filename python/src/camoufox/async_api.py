@@ -15,6 +15,7 @@ from camoufox.virtdisplay import VirtualDisplay
 from .fingerprints import generate_context_fingerprint
 from .ip import Proxy, proxy_exit_geo
 from .utils import (
+    DEFAULT_CANVAS_NOISE,
     async_attach_vd,
     attach_context_defaults,
     context_identity,
@@ -135,7 +136,7 @@ async def _new_browser(
     canvas_noise: Optional[bool] = False
     gpu_passthrough = False
     if not from_options:
-        canvas_noise = kwargs.get('canvas_noise')
+        canvas_noise = kwargs.get('canvas_noise', DEFAULT_CANVAS_NOISE)
         gpu_passthrough = bool(kwargs.get('gpu_passthrough'))
         # Opt-in; see the note in sync_api.NewBrowser.
         kwargs.setdefault('pin_cpu_cores', False)
