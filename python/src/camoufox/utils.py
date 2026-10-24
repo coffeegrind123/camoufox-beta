@@ -66,6 +66,8 @@ CACHE_PREFS: Dict[str, Any] = LAUNCHER_CONSTANTS['cachePrefs']
 # Prefs whose default differs between Firefox's Windows and Linux builds (all.js,
 # firefox.js and StaticPrefList.yaml, checked on 158) and that a page or the
 # user can observe, set to the Windows default:
+#   - media.eme.enabled: Linux ships EME off, so requestMediaKeySystemAccess()
+#     rejects with "EME has been preffed off", a message only Linux gives.
 #   - eat_space_to_next_word: double-click selects the trailing space too.
 #   - general.autoScroll, middlemouse.*: middle click autoscrolls. Linux instead pastes the
 #     X11 primary selection, firing a paste event no Windows browser sends.
@@ -75,8 +77,7 @@ CACHE_PREFS: Dict[str, Any] = LAUNCHER_CONSTANTS['cachePrefs']
 #     a thumb dragged far off snaps back, and holding on the track stops at
 #     the pointer.
 # Windows-only machinery (DirectComposition, ClearType, WMF) does nothing in a
-# Linux build and is left out, as is media.eme.enabled: Windows has PlayReady
-# behind EME, which a Linux build cannot supply.
+# Linux build and is left out.
 WINDOWS_BEHAVIOUR_PREFS: Dict[str, Any] = LAUNCHER_CONSTANTS['windowsBehaviourPrefs']
 
 # Video codecs a Windows desktop decodes in hardware, so that
