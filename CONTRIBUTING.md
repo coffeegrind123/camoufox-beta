@@ -14,7 +14,7 @@ Comment on an issue before you start work on it.
 ## Setup
 
 The browser builds on Linux; the steps are in the
-[README](README.md#building-the-browser). Install [ccache](https://ccache.dev/)
+[upstream README](https://github.com/daijro/camoufox#building-the-browser). Install [ccache](https://ccache.dev/)
 (`sudo apt install ccache` or `sudo dnf install ccache`). The build config
 enables it, so a rebuild after a small change takes about 5 minutes instead of
 40.
