@@ -358,7 +358,7 @@ def on_passthrough_host(gpu, os_key="lin"):
     """A host whose Firefox renders on `gpu`, read with the renderer unsanitized."""
     probes = []
 
-    def probe(executable_path, headless, env, raw=False):
+    def probe(executable_path, headless, env, prefs=None, raw=False):
         probes.append(raw)
         return gpu
 
